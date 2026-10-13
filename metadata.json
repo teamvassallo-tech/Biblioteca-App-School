@@ -1,0 +1,8 @@
+{
+  "name": "Remix BiblioScuola - Gestionale Biblioteca Scolastica",
+  "description": "Sistema gestionale moderno per biblioteche scolastiche con supporto scanner barcode USB, prestiti Scan \u0026 Go, catalogazione automatica ISBN, copertine web e ricerca intelligente AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
