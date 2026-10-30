@@ -507,49 +507,6 @@ app.get('/api/isbn/:isbn', async (req: Request, res: Response) => {
       }
     }
 
-    // --- FONTE 8: Gemini AI Assistant (Enrichment sinossi, genere scolastico e fallback semantico) ---
-    if ((!title || authors.length === 0 || !description) && activeGeminiKey) {
-      try {
-        const promptText = !title
-          ? `Identifica con precisione il libro cartaceo con codice ISBN "${cleanIsbn}" (o ISBN-10 "${isbn10 || ''}"). Se conosci questo libro, fornisci: titolo completo, autori (nome e cognome), casa editrice, anno indicativo, descrizione/sinossi in italiano (3 frasi) e genere scolastico (es. Narrativa, Avventura, Fumetti & Manga, Fiabe & Favole, Scienza & Natura, Storia & Biografie, Saggistica). Se non sei assolutamente certo, imposta found a false.`
-          : `Arricchisci la scheda del libro scolastico "${title}" di "${authors.join(', ')}" (ISBN: ${cleanIsbn}). Fornisci una sinossi coinvolgente in italiano per studenti/docenti e il genere letterario più appropriato per scuola primaria/secondaria.`;
-
-        const aiResponse = await callGemini({
-          contents: promptText,
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                found: { type: Type.BOOLEAN },
-                title: { type: Type.STRING },
-                authors: { type: Type.ARRAY, items: { type: Type.STRING } },
-                publisher: { type: Type.STRING },
-                publicationYear: { type: Type.STRING },
-                description: { type: Type.STRING },
-                categories: { type: Type.ARRAY, items: { type: Type.STRING } },
-              },
-              required: ['found', 'title', 'authors'],
-            },
-          },
-        });
-
-        const aiText = aiResponse.text?.trim() || '{}';
-        const aiData = JSON.parse(aiText);
-        if (aiData.found && aiData.title) {
-          if (!title) title = aiData.title;
-          if (authors.length === 0 && aiData.authors) authors = aiData.authors;
-          if (!publisher && aiData.publisher) publisher = aiData.publisher;
-          if (!publicationYear && aiData.publicationYear) publicationYear = aiData.publicationYear;
-          if (!description && aiData.description) description = aiData.description;
-          if (categories.length === 0 && aiData.categories) categories = aiData.categories;
-          if (!foundSource) foundSource = 'Gemini AI Assistant';
-        }
-      } catch (aiErr) {
-        console.warn('Gemini ISBN fallback error:', aiErr);
-      }
-    }
-
     // Recupero copertine originali autentiche dell'edizione italiana (Amazon IT CDN, Google Books Content)
     const originalCandidates = await getOriginalBookCoverCandidates(cleanIsbn);
     let verifiedCoverUrl = '';
@@ -571,8 +528,7 @@ app.get('/api/isbn/:isbn', async (req: Request, res: Response) => {
       return res.json({
         found: false,
         isbn: cleanIsbn,
-        message:
-          'Nessun metadato reperito sulle banche dati bibliotecarie (BNI, OPAC SBN, Open Library, Google Books, Crossref). Puoi compilare manualmente i campi o usare la fotocamera con l\'AI per analizzare la copertina e il frontespizio.',
+        message: 'Nessun risultato trovato nelle banche dati ufficiali',
       });
     }
 
@@ -595,6 +551,248 @@ app.get('/api/isbn/:isbn', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('ISBN lookup failed:', error);
     return res.status(500).json({ error: error?.message || 'Errore durante la ricerca ISBN' });
+  }
+});
+
+// Official Bibliographic Search by query (ISBN, Title, or Author) without AI
+app.get('/api/book-search', async (req: Request, res: Response) => {
+  try {
+    const rawQuery = (req.query.query as string || req.query.q as string || '').trim();
+    if (!rawQuery) {
+      return res.status(400).json({ error: 'Termine di ricerca mancante' });
+    }
+
+    const cleanIsbn = cleanIsbnString(rawQuery);
+    const isIsbn = (cleanIsbn.length === 10 || cleanIsbn.length === 13) && /^(\d{9}[\dX]|\d{13})$/i.test(cleanIsbn);
+
+    if (isIsbn) {
+      // Re-route to standard ISBN lookup logic
+      const subReq = { ...req, params: { isbn: cleanIsbn } } as unknown as Request;
+      // We can directly call the ISBN flow or redirect internally
+      const redirectUrl = `/api/isbn/${encodeURIComponent(cleanIsbn)}`;
+      return res.redirect(redirectUrl);
+    }
+
+    let title = '';
+    let authors: string[] = [];
+    let publisher = '';
+    let publicationYear = '';
+    let description = '';
+    let coverUrl = '';
+    let categories: string[] = [];
+    let pageCount: number | undefined = undefined;
+    let foundIsbn = '';
+    let foundSource = '';
+
+    // 1. OPAC SBN (Catalogo Nazionale delle Biblioteche Italiane - ICCU) by Title
+    try {
+      const opacTitleUrl = `https://opac.sbn.it/opacmobilegw/search.json?title=${encodeURIComponent(rawQuery)}&rows=5`;
+      const opacResp = await fetchWithTimeout(opacTitleUrl, 4500, {
+        'User-Agent': 'BiblioScuola/1.0 (Gestionale Biblioteca Scolastica; scuola italiana)',
+      });
+      if (opacResp && opacResp.ok) {
+        const opacData = await opacResp.json();
+        const records = opacData.briefRecords || [];
+        if (records.length > 0) {
+          // Prefer record with ISBN or first valid record
+          const bestRec = records.find((r: any) => r.isbn) || records[0];
+          let sbnTitle = bestRec.titolo || '';
+          if (sbnTitle.includes(' / ')) sbnTitle = sbnTitle.split(' / ')[0].trim();
+          if (sbnTitle.includes(' : ')) sbnTitle = sbnTitle.replace(/\s*:\s*/g, ' - ');
+          title = sbnTitle;
+
+          if (bestRec.autorePrincipale) {
+            let auth = bestRec.autorePrincipale.trim();
+            if (auth.includes(',')) {
+              const parts = auth.split(',').map((p: string) => p.trim());
+              auth = `${parts[1]} ${parts[0]}`.trim();
+            }
+            authors = [auth];
+          }
+
+          if (bestRec.pubblicazione) {
+            const pubText = bestRec.pubblicazione;
+            const match = pubText.match(/:\s*([^,0-9]+),?\s*(\d{4})?/);
+            if (match) {
+              if (match[1]) publisher = match[1].trim();
+              if (match[2]) publicationYear = match[2].trim();
+            } else {
+              const yearMatch = pubText.match(/\b(19\d\d|20\d\d)\b/);
+              if (yearMatch) publicationYear = yearMatch[1];
+            }
+          }
+
+          if (bestRec.isbn) {
+            foundIsbn = cleanIsbnString(bestRec.isbn);
+          }
+
+          if (bestRec.copertina && typeof bestRec.copertina === 'string') {
+            const candidate = bestRec.copertina
+              .replace(/^http:\/\//i, 'https://')
+              .replace('/small/', '/large/');
+            if (!candidate.includes('covers.librarything.com')) {
+              coverUrl = candidate;
+            }
+          }
+
+          foundSource = 'OPAC SBN / BNI (Catalogo Bibliotecario Nazionale)';
+        }
+      }
+    } catch (e) {
+      console.warn('OPAC SBN search by title error:', e);
+    }
+
+    // 2. OPAC SBN by Author (if title search gave no results)
+    if (!title && authors.length === 0) {
+      try {
+        const opacAuthorUrl = `https://opac.sbn.it/opacmobilegw/search.json?author=${encodeURIComponent(rawQuery)}&rows=5`;
+        const opacResp = await fetchWithTimeout(opacAuthorUrl, 4500, {
+          'User-Agent': 'BiblioScuola/1.0 (Gestionale Biblioteca Scolastica; scuola italiana)',
+        });
+        if (opacResp && opacResp.ok) {
+          const opacData = await opacResp.json();
+          const records = opacData.briefRecords || [];
+          if (records.length > 0) {
+            const bestRec = records.find((r: any) => r.isbn) || records[0];
+            let sbnTitle = bestRec.titolo || '';
+            if (sbnTitle.includes(' / ')) sbnTitle = sbnTitle.split(' / ')[0].trim();
+            if (sbnTitle.includes(' : ')) sbnTitle = sbnTitle.replace(/\s*:\s*/g, ' - ');
+            title = sbnTitle;
+
+            if (bestRec.autorePrincipale) {
+              let auth = bestRec.autorePrincipale.trim();
+              if (auth.includes(',')) {
+                const parts = auth.split(',').map((p: string) => p.trim());
+                auth = `${parts[1]} ${parts[0]}`.trim();
+              }
+              authors = [auth];
+            }
+
+            if (bestRec.pubblicazione) {
+              const pubText = bestRec.pubblicazione;
+              const match = pubText.match(/:\s*([^,0-9]+),?\s*(\d{4})?/);
+              if (match) {
+                if (match[1]) publisher = match[1].trim();
+                if (match[2]) publicationYear = match[2].trim();
+              }
+            }
+
+            if (bestRec.isbn) {
+              foundIsbn = cleanIsbnString(bestRec.isbn);
+            }
+
+            foundSource = 'OPAC SBN / BNI (Catalogo Bibliotecario Nazionale)';
+          }
+        }
+      } catch (e) {
+        console.warn('OPAC SBN search by author error:', e);
+      }
+    }
+
+    // 3. Open Library Search (if still missing fields or cover)
+    try {
+      const olUrl = `https://openlibrary.org/search.json?q=${encodeURIComponent(rawQuery)}&limit=1&fields=title,author_name,publisher,first_publish_year,cover_i,isbn,subject`;
+      const olResp = await fetchWithTimeout(olUrl, 4000);
+      if (olResp && olResp.ok) {
+        const olData = await olResp.json();
+        const doc = olData?.docs?.[0];
+        if (doc) {
+          if (!title && doc.title) title = doc.title;
+          if (authors.length === 0 && Array.isArray(doc.author_name)) authors = doc.author_name;
+          if (!publisher && Array.isArray(doc.publisher) && doc.publisher.length > 0) publisher = doc.publisher[0];
+          if (!publicationYear && doc.first_publish_year) publicationYear = String(doc.first_publish_year);
+          if (!foundIsbn && Array.isArray(doc.isbn) && doc.isbn.length > 0) {
+            foundIsbn = cleanIsbnString(doc.isbn[0]);
+          }
+          if (!coverUrl && doc.cover_i) {
+            coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
+          }
+          if (categories.length === 0 && Array.isArray(doc.subject)) {
+            categories = doc.subject.slice(0, 4);
+          }
+          if (!foundSource) foundSource = 'Open Library (Banca Dati Bibliotecaria)';
+        }
+      }
+    } catch (e) {
+      console.warn('Open Library text search error:', e);
+    }
+
+    // 4. Google Books API (Volumes search fallback)
+    try {
+      const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(rawQuery)}&maxResults=1`;
+      const gbResp = await fetchWithTimeout(gbUrl, 3500);
+      if (gbResp && gbResp.ok) {
+        const gbData = await gbResp.json();
+        const item = gbData?.items?.[0];
+        if (item && item.volumeInfo) {
+          const info = item.volumeInfo;
+          if (!title) {
+            title = info.title || '';
+            if (info.subtitle) title += ` - ${info.subtitle}`;
+          }
+          if (authors.length === 0 && info.authors) authors = info.authors;
+          if (!publisher && info.publisher) publisher = info.publisher;
+          if (!publicationYear && info.publishedDate) publicationYear = info.publishedDate.substring(0, 4);
+          if (!description && info.description) description = info.description;
+          if (categories.length === 0 && info.categories) categories = info.categories;
+          if (!pageCount && info.pageCount) pageCount = info.pageCount;
+          if (!foundIsbn && Array.isArray(info.industryIdentifiers)) {
+            const isbnId = info.industryIdentifiers.find((id: any) => id.type?.includes('ISBN'));
+            if (isbnId && isbnId.identifier) foundIsbn = cleanIsbnString(isbnId.identifier);
+          }
+          if (info.imageLinks) {
+            const gbImg = info.imageLinks.extraLarge || info.imageLinks.large || info.imageLinks.medium || info.imageLinks.thumbnail;
+            if (gbImg && !coverUrl) {
+              coverUrl = gbImg.replace(/^http:\/\//i, 'https://').replace(/&edge=curl/gi, '');
+            }
+          }
+          if (!foundSource) foundSource = 'Google Books (Banca Dati Bibliotecaria)';
+        }
+      }
+    } catch (e) {
+      console.warn('Google Books text search error:', e);
+    }
+
+    // Cover candidates
+    const originalCandidates = foundIsbn ? await getOriginalBookCoverCandidates(foundIsbn) : [];
+    let verifiedCoverUrl = '';
+
+    if (originalCandidates.length > 0) {
+      verifiedCoverUrl = originalCandidates[0].url;
+    } else if (coverUrl && (await isWorkingImageUrl(coverUrl, 2000))) {
+      verifiedCoverUrl = coverUrl;
+    } else if (title) {
+      verifiedCoverUrl = generateBookCoverDataUrl(
+        title,
+        authors.length > 0 ? authors.join(', ') : 'Autore',
+        categories[0] || 'Narrativa'
+      );
+    }
+
+    if (!title && authors.length === 0) {
+      return res.json({
+        found: false,
+        message: 'Nessun risultato trovato nelle banche dati ufficiali',
+      });
+    }
+
+    return res.json({
+      found: true,
+      isbn: foundIsbn || undefined,
+      title,
+      authors,
+      publisher,
+      publicationYear,
+      description,
+      coverUrl: verifiedCoverUrl,
+      coverCandidates: originalCandidates,
+      categories,
+      pageCount,
+      source: foundSource || 'Banche dati bibliotecarie collegate (OPAC SBN / Open Library / Google Books)',
+    });
+  } catch (error: any) {
+    console.error('Book text search failed:', error);
+    return res.status(500).json({ error: error?.message || 'Errore durante la ricerca del libro' });
   }
 });
 
