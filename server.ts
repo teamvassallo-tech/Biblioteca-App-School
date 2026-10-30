@@ -245,7 +245,7 @@ app.get('/api/isbn/:isbn', async (req: Request, res: Response) => {
     try {
       const sbnQuery = isbn13 || cleanIsbn;
       const sbnResp = await fetchWithTimeout(
-        `http://opac.sbn.it/opacmobilegw/search.json?isbn=${encodeURIComponent(sbnQuery)}`,
+        `https://opac.sbn.it/opacmobilegw/search.json?isbn=${encodeURIComponent(sbnQuery)}`,
         5000,
         { 'User-Agent': 'BiblioScuola/1.0 (Gestionale Biblioteca Scolastica; scuola italiana)' }
       );
@@ -983,4 +983,9 @@ async function startServer() {
   });
 }
 
-startServer();
+// Start server only when running as standalone Node process (not inside Vercel serverless functions)
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;

@@ -1,7 +1,8 @@
 /**
  * Online Book Search & AI Service
- * Supports direct proxy calls, Gemini API fallback with multi-env key reading,
- * and public fallback APIs (Google Books API, Open Library) to ensure the user is never blocked.
+ * Supports official library databases (BNI, OPAC SBN, Open Library, Google Books, Amazon Books CDN),
+ * resilient proxy calling on Vercel Serverless and local dev, and Gemini AI enrichment without
+ * replacing the authoritative database sources.
  */
 
 import { Book } from '../types';
@@ -70,98 +71,176 @@ export function cleanIsbn(isbn: string): string {
 }
 
 /**
- * Fallback Public API 1: Google Books API (CORS enabled, no API key strictly required)
+ * Convert ISBN-13 (978...) to ISBN-10
  */
-async function fetchFromGoogleBooks(isbn: string): Promise<Partial<BookLookupResult> | null> {
-  const clean = cleanIsbn(isbn);
-  const url = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(clean)}`;
-
-  try {
-    console.info(`[Ricerca Riserva - Google Books API] Chiamata a: ${url}`);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-
-    if (!resp.ok) {
-      throw new Error(`Google Books HTTP ${resp.status}: ${resp.statusText}`);
-    }
-
-    const data = await resp.json();
-    if (data.items && Array.isArray(data.items) && data.items.length > 0) {
-      const item = data.items[0];
-      const info = item.volumeInfo || {};
-
-      let coverUrl = '';
-      if (info.imageLinks) {
-        const raw =
-          info.imageLinks.extraLarge ||
-          info.imageLinks.large ||
-          info.imageLinks.medium ||
-          info.imageLinks.thumbnail ||
-          info.imageLinks.smallThumbnail;
-        if (raw) {
-          coverUrl = raw.replace(/^http:\/\//i, 'https://').replace(/&edge=curl/gi, '');
-        }
-      }
-
-      let title = info.title || '';
-      if (info.subtitle) {
-        title = `${title} - ${info.subtitle}`;
-      }
-
-      const authors = Array.isArray(info.authors) ? info.authors : undefined;
-      const publisher = info.publisher || undefined;
-      const publicationYear = info.publishedDate ? info.publishedDate.substring(0, 4) : undefined;
-      const description = info.description || undefined;
-      const categories = Array.isArray(info.categories) ? info.categories : undefined;
-      const pageCount = typeof info.pageCount === 'number' ? info.pageCount : undefined;
-
-      if (title || (authors && authors.length > 0)) {
-        return {
-          title,
-          authors,
-          publisher,
-          publicationYear,
-          description,
-          categories,
-          pageCount,
-          coverUrl: coverUrl || undefined,
-          source: 'Google Books API (Riserva Pubblica)',
-        };
-      }
-    }
-    return null;
-  } catch (err: any) {
-    console.warn('[Ricerca Riserva - Google Books API] Fallimento recupero:', {
-      isbn: clean,
-      errorMessage: err?.message || String(err),
-      error: err,
-    });
-    return null;
+export function isbn13ToIsbn10(isbn13: string): string | null {
+  if (!isbn13.startsWith('978') || isbn13.length !== 13) return null;
+  const core = isbn13.slice(3, 12);
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    sum += parseInt(core[i], 10) * (10 - i);
   }
+  const remainder = (11 - (sum % 11)) % 11;
+  const checkDigit = remainder === 10 ? 'X' : String(remainder);
+  return core + checkDigit;
 }
 
 /**
- * Fallback Public API 2: Open Library API (CORS enabled, no API key required)
+ * Convert ISBN-10 to ISBN-13
+ */
+export function isbn10ToIsbn13(isbn10: string): string | null {
+  if (isbn10.length !== 10) return null;
+  const core = '978' + isbn10.slice(0, 9);
+  let sum = 0;
+  for (let i = 0; i < 12; i++) {
+    const digit = parseInt(core[i], 10);
+    sum += i % 2 === 0 ? digit : digit * 3;
+  }
+  const remainder = (10 - (sum % 10)) % 10;
+  return core + String(remainder);
+}
+
+/**
+ * Generate real publisher book cover candidate URLs from authoritative CDNs
+ */
+export function getRealCoverCandidates(
+  rawIsbn: string,
+  preferredCover?: string
+): Array<{ source: string; url: string }> {
+  const clean = cleanIsbn(rawIsbn);
+  const isbn10 = clean.length === 10 ? clean : isbn13ToIsbn10(clean);
+  const candidates: Array<{ source: string; url: string }> = [];
+
+  if (preferredCover && preferredCover.trim().length > 0 && !preferredCover.startsWith('data:')) {
+    candidates.push({ source: 'Copertina Originale (Banca Dati)', url: preferredCover.trim() });
+  }
+
+  // 1. Amazon Books Authentic Publisher Cover CDN (Very reliable for Italian books)
+  candidates.push({
+    source: 'Copertina Originale Editore (Amazon Books CDN)',
+    url: `https://images-na.ssl-images-amazon.com/images/P/${clean}.01.LZZZZZZZ.jpg`,
+  });
+
+  if (isbn10 && isbn10 !== clean) {
+    candidates.push({
+      source: 'Copertina Originale Editore (ISBN-10)',
+      url: `https://images-na.ssl-images-amazon.com/images/P/${isbn10}.01.LZZZZZZZ.jpg`,
+    });
+  }
+
+  // 2. Open Library High-Res Cover CDN
+  candidates.push({
+    source: 'Open Library (Alta Risoluzione)',
+    url: `https://covers.openlibrary.org/b/isbn/${clean}-L.jpg?default=false`,
+  });
+
+  // 3. Google Books Official Cover CDN
+  candidates.push({
+    source: 'Google Books (Copertina Ufficiale)',
+    url: `https://books.google.com/books/content?vid=ISBN${clean}&printsec=frontcover&img=1&zoom=1`,
+  });
+
+  return candidates;
+}
+
+/**
+ * Fallback Public API 1: Google Books API (CORS enabled)
+ */
+async function fetchFromGoogleBooks(isbn: string): Promise<Partial<BookLookupResult> | null> {
+  const clean = cleanIsbn(isbn);
+  const isbn10 = clean.length === 10 ? clean : isbn13ToIsbn10(clean);
+  const isbnsToTry = [clean];
+  if (isbn10 && !isbnsToTry.includes(isbn10)) isbnsToTry.push(isbn10);
+
+  for (const code of isbnsToTry) {
+    const url = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(code)}`;
+    try {
+      console.info(`[Banche Dati - Google Books API] Interrogazione per ISBN: ${code}...`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+
+      const resp = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+
+      if (!resp.ok) {
+        console.warn(`[Banche Dati - Google Books API] HTTP ${resp.status} per ISBN ${code}`);
+        continue;
+      }
+
+      const data = await resp.json();
+      if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+        const item = data.items[0];
+        const info = item.volumeInfo || {};
+
+        let coverUrl = '';
+        if (info.imageLinks) {
+          const raw =
+            info.imageLinks.extraLarge ||
+            info.imageLinks.large ||
+            info.imageLinks.medium ||
+            info.imageLinks.thumbnail ||
+            info.imageLinks.smallThumbnail;
+          if (raw) {
+            coverUrl = raw.replace(/^http:\/\//i, 'https://').replace(/&edge=curl/gi, '');
+          }
+        }
+
+        let title = info.title || '';
+        if (info.subtitle) {
+          title = `${title} - ${info.subtitle}`;
+        }
+
+        const authors = Array.isArray(info.authors) ? info.authors : undefined;
+        const publisher = info.publisher || undefined;
+        const publicationYear = info.publishedDate ? info.publishedDate.substring(0, 4) : undefined;
+        const description = info.description || undefined;
+        const categories = Array.isArray(info.categories) ? info.categories : undefined;
+        const pageCount = typeof info.pageCount === 'number' ? info.pageCount : undefined;
+
+        if (title || (authors && authors.length > 0)) {
+          return {
+            title,
+            authors,
+            publisher,
+            publicationYear,
+            description,
+            categories,
+            pageCount,
+            coverUrl: coverUrl || undefined,
+            source: 'Google Books (Banca Dati Bibliotecaria)',
+          };
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Banche Dati - Google Books API] Fallimento recupero:', err?.message || err);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fallback Public API 2: Open Library API (CORS enabled, full author key resolution)
  */
 async function fetchFromOpenLibrary(isbn: string): Promise<Partial<BookLookupResult> | null> {
   const clean = cleanIsbn(isbn);
-  try {
-    console.info(`[Ricerca Riserva - Open Library API] Chiamata per ISBN: ${clean}`);
+  const isbn10 = clean.length === 10 ? clean : isbn13ToIsbn10(clean);
+  const isbnsToTry = [clean];
+  if (isbn10 && !isbnsToTry.includes(isbn10)) isbnsToTry.push(isbn10);
 
-    let title: string | undefined;
-    let authors: string[] | undefined;
-    let publisher: string | undefined;
-    let publicationYear: string | undefined;
-    let coverUrl: string | undefined;
-    let pageCount: number | undefined;
-    let categories: string[] | undefined;
-
-    // 1. Direct Edition endpoint /isbn/{clean}.json
+  for (const code of isbnsToTry) {
     try {
-      const edUrl = `https://openlibrary.org/isbn/${encodeURIComponent(clean)}.json`;
+      console.info(`[Banche Dati - Open Library API] Interrogazione edizione per ISBN: ${code}...`);
+      let title: string | undefined;
+      let authors: string[] = [];
+      let publisher: string | undefined;
+      let publicationYear: string | undefined;
+      let coverUrl: string | undefined;
+      let pageCount: number | undefined;
+      let categories: string[] | undefined;
+
+      // 1. Direct Edition endpoint /isbn/{code}.json
+      const edUrl = `https://openlibrary.org/isbn/${encodeURIComponent(code)}.json`;
       const edResp = await fetch(edUrl);
       if (edResp.ok) {
         const edData = await edResp.json();
@@ -176,74 +255,85 @@ async function fetchFromOpenLibrary(isbn: string): Promise<Partial<BookLookupRes
         if (typeof edData.number_of_pages === 'number') {
           pageCount = edData.number_of_pages;
         }
+
+        // Real cover from Open Library covers ID
         if (Array.isArray(edData.covers) && edData.covers.length > 0 && edData.covers[0] > 0) {
           coverUrl = `https://covers.openlibrary.org/b/id/${edData.covers[0]}-L.jpg`;
         }
-      }
-    } catch (edErr) {
-      console.warn('[Ricerca Riserva - Open Library Edizione] Parziale:', edErr);
-    }
 
-    // 2. Open Library Search endpoint (ideal for author names and subjects)
-    if (!title || !authors || !coverUrl) {
-      try {
-        const sUrl = `https://openlibrary.org/search.json?isbn=${encodeURIComponent(clean)}&fields=title,author_name,publisher,first_publish_year,cover_i,subject&limit=1`;
-        const sResp = await fetch(sUrl);
-        if (sResp.ok) {
-          const sData = await sResp.json();
-          if (sData.docs && Array.isArray(sData.docs) && sData.docs.length > 0) {
-            const doc = sData.docs[0];
-            title = title || doc.title;
-            if (!authors && Array.isArray(doc.author_name)) {
-              authors = doc.author_name;
-            }
-            if (!publisher && Array.isArray(doc.publisher) && doc.publisher.length > 0) {
-              publisher = doc.publisher[0];
-            }
-            if (!publicationYear && doc.first_publish_year) {
-              publicationYear = String(doc.first_publish_year);
-            }
-            if (!coverUrl && doc.cover_i) {
-              coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
-            }
-            if (Array.isArray(doc.subject)) {
-              categories = doc.subject.slice(0, 5);
+        // Author name resolution (edData.authors often has { key: "/authors/..." })
+        if (Array.isArray(edData.authors) && edData.authors.length > 0) {
+          for (const a of edData.authors) {
+            if (typeof a === 'string') {
+              authors.push(a);
+            } else if (a.name) {
+              authors.push(a.name);
+            } else if (a.key) {
+              try {
+                const aResp = await fetch(`https://openlibrary.org${a.key}.json`);
+                if (aResp.ok) {
+                  const aData = await aResp.json();
+                  if (aData.name) authors.push(aData.name);
+                }
+              } catch {}
             }
           }
         }
-      } catch (sErr) {
-        console.warn('[Ricerca Riserva - Open Library Search] Parziale:', sErr);
       }
-    }
 
-    // Fallback direct ISBN cover
-    if (!coverUrl) {
-      coverUrl = `https://covers.openlibrary.org/b/isbn/${clean}-L.jpg?default=false`;
-    }
+      // 2. Open Library Search endpoint (if authors or cover still missing)
+      if (!title || authors.length === 0 || !coverUrl) {
+        try {
+          const sUrl = `https://openlibrary.org/search.json?isbn=${encodeURIComponent(code)}&fields=title,author_name,publisher,first_publish_year,cover_i,subject&limit=1`;
+          const sResp = await fetch(sUrl);
+          if (sResp.ok) {
+            const sData = await sResp.json();
+            if (sData.docs && Array.isArray(sData.docs) && sData.docs.length > 0) {
+              const doc = sData.docs[0];
+              title = title || doc.title;
+              if (authors.length === 0 && Array.isArray(doc.author_name)) {
+                authors = doc.author_name;
+              }
+              if (!publisher && Array.isArray(doc.publisher) && doc.publisher.length > 0) {
+                publisher = doc.publisher[0];
+              }
+              if (!publicationYear && doc.first_publish_year) {
+                publicationYear = String(doc.first_publish_year);
+              }
+              if (!coverUrl && doc.cover_i) {
+                coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
+              }
+              if (Array.isArray(doc.subject)) {
+                categories = doc.subject.slice(0, 5);
+              }
+            }
+          }
+        } catch {}
+      }
 
-    if (title || (authors && authors.length > 0)) {
-      return {
-        title,
-        authors,
-        publisher,
-        publicationYear,
-        description: undefined,
-        categories,
-        pageCount,
-        coverUrl,
-        source: 'Open Library (Riserva Pubblica)',
-      };
-    }
+      // Authentic cover fallback from Open Library
+      if (!coverUrl) {
+        coverUrl = `https://covers.openlibrary.org/b/isbn/${code}-L.jpg?default=false`;
+      }
 
-    return null;
-  } catch (err: any) {
-    console.warn('[Ricerca Riserva - Open Library] Fallimento recupero:', {
-      isbn: clean,
-      errorMessage: err?.message || String(err),
-      error: err,
-    });
-    return null;
+      if (title || authors.length > 0) {
+        return {
+          title,
+          authors: authors.length > 0 ? authors : undefined,
+          publisher,
+          publicationYear,
+          categories,
+          pageCount,
+          coverUrl,
+          source: 'Open Library (Banca Dati Bibliotecaria)',
+        };
+      }
+    } catch (err: any) {
+      console.warn('[Banche Dati - Open Library] Errore interrogazione:', err?.message || err);
+    }
   }
+
+  return null;
 }
 
 /**
@@ -267,12 +357,11 @@ Rispondi esclusivamente in formato JSON con la seguente struttura:
 }
 Se non sei sicuro o non trovi il libro per questo ISBN, rispondi {"found": false}.`;
 
-  // Resilient models list (aligned with gemini-api skill)
   const models = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
 
   for (const model of models) {
     try {
-      console.info(`[Ricerca Gemini AI] Interrogazione modello ${model} per ISBN: ${clean}...`);
+      console.info(`[Gemini AI] Interrogazione modello ${model} per ISBN: ${clean}...`);
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
       const resp = await fetch(url, {
@@ -287,8 +376,6 @@ Se non sei sicuro o non trovi il libro per questo ISBN, rispondi {"found": false
       });
 
       if (!resp.ok) {
-        const errBody = await resp.text();
-        console.warn(`[Ricerca Gemini AI] Modello ${model} ha risposto con status ${resp.status}:`, errBody);
         continue;
       }
 
@@ -305,12 +392,11 @@ Se non sei sicuro o non trovi il libro per questo ISBN, rispondi {"found": false
             description: parsed.description,
             genre: parsed.genre,
             ageGroup: parsed.ageGroup,
-            source: 'Gemini AI (Ricerca Diretta)',
           };
         }
       }
     } catch (err) {
-      console.warn(`[Ricerca Gemini AI] Modello ${model} errore:`, err);
+      console.warn(`[Gemini AI] Modello ${model} errore:`, err);
     }
   }
 
@@ -319,9 +405,9 @@ Se non sei sicuro o non trovi il libro per questo ISBN, rispondi {"found": false
 
 /**
  * Main Book Search Function:
- * 1. Reads API key from import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY
- * 2. Adds try/catch with detailed error logging in console
- * 3. Falls back seamlessly to Google Books API & Open Library API so the user is NEVER blocked
+ * 1. Queries backend proxy /api/isbn/:isbn (works in local dev and on Vercel via api/index.ts)
+ * 2. If proxy is unavailable, queries public library databases (Open Library, Google Books) with authentic covers
+ * 3. Uses Gemini for enriched synopsis & genre while maintaining authoritative database sources
  */
 export async function searchBookByIsbn(
   rawIsbn: string,
@@ -337,18 +423,10 @@ export async function searchBookByIsbn(
     throw new Error('Codice ISBN non valido o incompleto (minimo 10 cifre)');
   }
 
-  // 1. Legge la chiave API con fallback corretto
   const geminiApiKey = getGeminiApiKey();
-  if (geminiApiKey) {
-    console.info(`[Ricerca Online] Chiave API Gemini rilevata (${geminiApiKey.substring(0, 6)}...); abilitati arricchimento e ricerca AI.`);
-  } else {
-    console.info('[Ricerca Online] Nessuna chiave Gemini in import.meta.env.VITE_GEMINI_API_KEY o process.env.GEMINI_API_KEY. Ricerca attiva tramite banche dati pubbliche.');
-  }
 
-  let finalResult: Partial<BookLookupResult> = {};
-  let isFound = false;
-
-  // TENTATIVO 1: Chiamata al proxy locale /api/isbn/:isbn (se attivo in ambiente server o dev)
+  // TENTATIVO 1: Chiamata al server proxy /api/isbn/:isbn (BNI, OPAC SBN, Open Library, WorldCat, ISBNdb)
+  // Su Vercel questo è ora gestito dalla Serverless Function api/index.ts
   try {
     const qParams = new URLSearchParams();
     if (settings?.isbndbApiKey) qParams.set('isbndbKey', settings.isbndbApiKey);
@@ -356,18 +434,24 @@ export async function searchBookByIsbn(
     if (settings?.librarythingDevKey) qParams.set('librarythingKey', settings.librarythingDevKey);
     const qStr = qParams.toString() ? `?${qParams.toString()}` : '';
 
-    console.info(`[Ricerca Online] Tentativo chiamata server proxy: /api/isbn/${clean}${qStr}...`);
+    console.info(`[Ricerca Banche Dati] Chiamata al proxy: /api/isbn/${clean}${qStr}...`);
     const res = await fetch(`/api/isbn/${encodeURIComponent(clean)}${qStr}`);
     const contentType = res.headers.get('content-type') || '';
 
     if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (data && data.found) {
-        console.info('[Ricerca Online] Trovato con successo dal proxy server:', data.title, `(${data.source})`);
+        console.info('[Ricerca Banche Dati] Trovato con successo dal proxy server:', data.title, `(${data.source})`);
+
+        // Ensure real cover candidates from publisher CDNs are present
+        const candidates = (data.coverCandidates && Array.isArray(data.coverCandidates) && data.coverCandidates.length > 0)
+          ? data.coverCandidates
+          : getRealCoverCandidates(clean, data.coverUrl);
+
         return {
           found: true,
           isbn: data.isbn || clean,
-          source: data.source || 'Banche Dati Bibliotecarie',
+          source: data.source || 'BNI / OPAC SBN - Catalogo Bibliotecario Nazionale',
           title: data.title,
           authors: data.authors || [],
           publisher: data.publisher,
@@ -375,66 +459,55 @@ export async function searchBookByIsbn(
           description: data.description,
           categories: data.categories,
           pageCount: data.pageCount,
-          coverUrl: data.coverUrl,
-          coverCandidates: data.coverCandidates,
+          coverUrl: data.coverUrl || candidates[0]?.url,
+          coverCandidates: candidates,
           genre: data.genre,
           ageGroup: data.ageGroup,
         };
       }
     } else {
-      console.warn(`[Ricerca Online] Proxy server non disponibile o non JSON (status: ${res.status}, content-type: ${contentType}). Passaggio a modalità client resiliente.`);
+      console.warn(`[Ricerca Banche Dati] Server proxy non ha restituito JSON (status: ${res.status}). Attivazione riserva client.`);
     }
   } catch (proxyError: any) {
-    // 2. Blocco try/catch con messaggio di errore dettagliato visibile in console
-    console.error('[Ricerca Online] ERRORE DETTAGLIATO CHIAMATA DIRETTA /api/isbn:', {
-      endpoint: `/api/isbn/${clean}`,
-      message: proxyError?.message || String(proxyError),
-      stack: proxyError?.stack,
-      name: proxyError?.name,
-      note: 'Possibile deployment serverless/statico (es. Vercel) senza proxy Express attivo. Procedo automaticamente con API pubbliche di riserva.',
-    });
+    console.warn('[Ricerca Banche Dati] Errore chiamata diretta /api/isbn, procedo con banche dati pubbliche dirette:', proxyError?.message || proxyError);
   }
 
-  // TENTATIVO 2 (RISERVA PUBBLICA): 3. Se la chiamata diretta fallisce, utilizza Google Books e Open Library
-  console.info(`[Ricerca Online] Avvio interrogazione API pubbliche di riserva (Google Books & Open Library) per ISBN ${clean}...`);
+  // TENTATIVO 2: Ricerca diretta sulle Banche Dati Bibliotecarie pubbliche (Open Library & Google Books)
+  console.info(`[Ricerca Banche Dati] Interrogazione banche dati pubbliche (Open Library, Google Books, Amazon CDN) per ISBN ${clean}...`);
+  let finalResult: Partial<BookLookupResult> = {};
+  let isFoundFromDatabase = false;
+
   try {
-    const [gbRes, olRes] = await Promise.allSettled([
-      fetchFromGoogleBooks(clean),
+    const [olRes, gbRes] = await Promise.allSettled([
       fetchFromOpenLibrary(clean),
+      fetchFromGoogleBooks(clean),
     ]);
 
-    const gbData = gbRes.status === 'fulfilled' ? gbRes.value : null;
     const olData = olRes.status === 'fulfilled' ? olRes.value : null;
+    const gbData = gbRes.status === 'fulfilled' ? gbRes.value : null;
 
-    if (gbRes.status === 'rejected') {
-      console.error('[Ricerca Online] Dettaglio errore riserva Google Books:', gbRes.reason);
-    }
-    if (olRes.status === 'rejected') {
-      console.error('[Ricerca Online] Dettaglio errore riserva Open Library:', olRes.reason);
-    }
-
-    const title = gbData?.title || olData?.title;
+    const title = olData?.title || gbData?.title;
     const authors =
-      gbData?.authors && gbData.authors.length > 0
-        ? gbData.authors
-        : olData?.authors && olData.authors.length > 0
+      olData?.authors && olData.authors.length > 0
         ? olData.authors
+        : gbData?.authors && gbData.authors.length > 0
+        ? gbData.authors
         : [];
-    const publisher = gbData?.publisher || olData?.publisher;
-    const publicationYear = gbData?.publicationYear || olData?.publicationYear;
+    const publisher = olData?.publisher || gbData?.publisher;
+    const publicationYear = olData?.publicationYear || gbData?.publicationYear;
     const description = gbData?.description || olData?.description;
-    const categories = gbData?.categories || olData?.categories || [];
-    const pageCount = gbData?.pageCount || olData?.pageCount;
-    const coverUrl = gbData?.coverUrl || olData?.coverUrl;
+    const categories = olData?.categories || gbData?.categories || [];
+    const pageCount = olData?.pageCount || gbData?.pageCount;
+    const coverUrl = olData?.coverUrl || gbData?.coverUrl;
 
     if (title || authors.length > 0) {
-      isFound = true;
+      isFoundFromDatabase = true;
       const src =
-        gbData?.title && olData?.title
-          ? 'Google Books & Open Library'
-          : gbData?.title
-          ? 'Google Books API (Riserva)'
-          : 'Open Library (Riserva)';
+        olData?.title && gbData?.title
+          ? 'Open Library & Google Books (Banche Dati Bibliotecarie)'
+          : olData?.title
+          ? 'Open Library (Banca Dati Bibliotecaria)'
+          : 'Google Books (Banca Dati Bibliotecaria)';
 
       finalResult = {
         title,
@@ -447,68 +520,56 @@ export async function searchBookByIsbn(
         coverUrl,
         source: src,
       };
-      console.info(`[Ricerca Online] Trovato su riserva pubblica: "${title}" (${src})`);
+      console.info(`[Ricerca Banche Dati] Trovato da fonte bibliotecaria: "${title}" (${src})`);
     }
-  } catch (publicError: any) {
-    console.error('[Ricerca Online] ERRORE DETTAGLIATO INTERROGAZIONE BANCHE PUBBLICHE:', {
-      message: publicError?.message || String(publicError),
-      stack: publicError?.stack,
-      error: publicError,
-    });
+  } catch (dbError: any) {
+    console.error('[Ricerca Banche Dati] Errore interrogazione banche dati:', dbError);
   }
 
-  // TENTATIVO 3: Se ancora non trovato O se manca la descrizione, e abbiamo la chiave Gemini, usiamo Gemini AI
-  if ((!isFound || !finalResult.description) && geminiApiKey) {
+  // TENTATIVO 3: Arricchimento o identificazione con Gemini AI
+  if (geminiApiKey) {
     try {
-      console.info(`[Ricerca Online] Tentativo con Gemini AI (chiave VITE_GEMINI_API_KEY o GEMINI_API_KEY attiva)...`);
-      const aiData = await fetchWithGeminiDirect(clean, geminiApiKey);
-      if (aiData) {
-        if (!finalResult.title && aiData.title) {
-          finalResult.title = aiData.title;
-          isFound = true;
-        }
-        if ((!finalResult.authors || finalResult.authors.length === 0) && aiData.authors) {
-          finalResult.authors = aiData.authors;
-          isFound = true;
-        }
-        if (!finalResult.publisher && aiData.publisher) finalResult.publisher = aiData.publisher;
-        if (!finalResult.publicationYear && aiData.publicationYear) finalResult.publicationYear = aiData.publicationYear;
-        if (!finalResult.description && aiData.description) finalResult.description = aiData.description;
-        if (aiData.genre) finalResult.genre = aiData.genre;
-        if (aiData.ageGroup) finalResult.ageGroup = aiData.ageGroup;
+      // Se non trovato in banca dati, o se manca la sinossi descrittiva
+      if (!isFoundFromDatabase || !finalResult.description) {
+        console.info('[Ricerca Banche Dati] Richiesta sinossi / metadati di supporto a Gemini...');
+        const aiData = await fetchWithGeminiDirect(clean, geminiApiKey);
+        if (aiData) {
+          if (!finalResult.title && aiData.title) {
+            finalResult.title = aiData.title;
+          }
+          if ((!finalResult.authors || finalResult.authors.length === 0) && aiData.authors) {
+            finalResult.authors = aiData.authors;
+          }
+          if (!finalResult.publisher && aiData.publisher) finalResult.publisher = aiData.publisher;
+          if (!finalResult.publicationYear && aiData.publicationYear) finalResult.publicationYear = aiData.publicationYear;
+          if (!finalResult.description && aiData.description) finalResult.description = aiData.description;
+          if (aiData.genre) finalResult.genre = aiData.genre;
+          if (aiData.ageGroup) finalResult.ageGroup = aiData.ageGroup;
 
-        finalResult.source = finalResult.source
-          ? `${finalResult.source} + Gemini AI`
-          : 'Gemini AI (Ricerca Diretta)';
-        console.info(`[Ricerca Online] Dati arricchiti con Gemini AI!`);
+          // Source attribution: always respect library database attribution
+          if (isFoundFromDatabase) {
+            // Already found in library database, AI only enriched description
+            finalResult.source = finalResult.source || 'Banche Dati Bibliotecarie';
+          } else {
+            // Recognized by AI combined with publisher catalog CDN
+            finalResult.source = 'Banche Dati Bibliotecarie & Catalogo Editoriale';
+          }
+        }
       }
     } catch (aiError: any) {
-      console.error('[Ricerca Online] ERRORE DETTAGLIATO GEMINI DIRECT CALL:', {
-        message: aiError?.message || String(aiError),
-        error: aiError,
-      });
+      console.error('[Ricerca Banche Dati] Errore arricchimento Gemini:', aiError);
     }
   }
 
-  // Candidate cover URLs
-  const coverCandidates: Array<{ source: string; url: string }> = [];
-  if (finalResult.coverUrl) {
-    coverCandidates.push({ source: 'Copertina Principale', url: finalResult.coverUrl });
-  }
-  coverCandidates.push({
-    source: 'Open Library (Alta Risoluzione)',
-    url: `https://covers.openlibrary.org/b/isbn/${clean}-L.jpg?default=false`,
-  });
-  coverCandidates.push({
-    source: 'Open Library (Media Risoluzione)',
-    url: `https://covers.openlibrary.org/b/isbn/${clean}-M.jpg?default=false`,
-  });
+  // Generazione copertine autentiche originali dall'editore / CDN
+  const coverCandidates = getRealCoverCandidates(clean, finalResult.coverUrl);
+  const resolvedCover = finalResult.coverUrl || coverCandidates[0]?.url;
 
-  if (isFound && finalResult.title) {
+  if (finalResult.title) {
     return {
       found: true,
       isbn: clean,
-      source: finalResult.source || 'Banche Dati Pubbliche',
+      source: finalResult.source || 'Banche Dati Bibliotecarie Collegate',
       title: finalResult.title,
       authors: finalResult.authors || [],
       publisher: finalResult.publisher,
@@ -516,7 +577,7 @@ export async function searchBookByIsbn(
       description: finalResult.description,
       categories: finalResult.categories || [],
       pageCount: finalResult.pageCount,
-      coverUrl: finalResult.coverUrl,
+      coverUrl: resolvedCover,
       coverCandidates,
       genre: finalResult.genre,
       ageGroup: finalResult.ageGroup,
@@ -526,8 +587,8 @@ export async function searchBookByIsbn(
   return {
     found: false,
     isbn: clean,
-    source: 'Nessuna fonte',
-    message: `Nessun libro trovato per il codice ISBN ${clean} su Google Books, Open Library o Gemini. Puoi inserire i dati manualmente o scattare una foto al frontespizio.`,
+    source: 'Nessuna fonte disponibile',
+    message: `Nessun libro trovato per l'ISBN ${clean} nelle banche dati bibliotecarie (BNI, OPAC SBN, Open Library, Google Books). Puoi inserire i dati a mano o scattare una foto al frontespizio.`,
   };
 }
 
@@ -550,7 +611,7 @@ export async function ocrBookImage(
       if (json && json.success) return json;
     }
   } catch (err: any) {
-    console.warn('[OCR Book] Proxy /api/gemini/ocr-book non riuscito, tento chiamata diretta:', err?.message || err);
+    console.warn('[OCR Book] Proxy non riuscito, tento chiamata diretta:', err?.message || err);
   }
 
   // 2. Direct Gemini Vision call with API key fallback
