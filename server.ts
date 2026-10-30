@@ -17,9 +17,10 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
-// Initialize GoogleGenAI SDK server-side
+// Initialize GoogleGenAI SDK server-side (supporting both GEMINI_API_KEY and VITE_GEMINI_API_KEY)
+const activeGeminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
 const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: activeGeminiKey,
   httpOptions: {
     headers: {
       'User-Agent': 'aistudio-build',
@@ -507,7 +508,7 @@ app.get('/api/isbn/:isbn', async (req: Request, res: Response) => {
     }
 
     // --- FONTE 8: Gemini AI Assistant (Enrichment sinossi, genere scolastico e fallback semantico) ---
-    if ((!title || authors.length === 0 || !description) && process.env.GEMINI_API_KEY) {
+    if ((!title || authors.length === 0 || !description) && activeGeminiKey) {
       try {
         const promptText = !title
           ? `Identifica con precisione il libro cartaceo con codice ISBN "${cleanIsbn}" (o ISBN-10 "${isbn10 || ''}"). Se conosci questo libro, fornisci: titolo completo, autori (nome e cognome), casa editrice, anno indicativo, descrizione/sinossi in italiano (3 frasi) e genere scolastico (es. Narrativa, Avventura, Fumetti & Manga, Fiabe & Favole, Scienza & Natura, Storia & Biografie, Saggistica). Se non sei assolutamente certo, imposta found a false.`
@@ -666,7 +667,7 @@ app.post('/api/gemini/generate-cover', async (req: Request, res: Response) => {
     const school = (schoolName || 'Biblioteca Scolastica').trim();
 
     // 1. Try Gemini AI generation
-    if (process.env.GEMINI_API_KEY) {
+    if (activeGeminiKey) {
       try {
         const prompt = `Sei un maestro illustratore e book cover designer professionista specializzato in grafica editoriale per biblioteche scolastiche.
 Genera il codice SVG COMPLETO, moderno e artisticamente impeccabile per la copertina del seguente libro:

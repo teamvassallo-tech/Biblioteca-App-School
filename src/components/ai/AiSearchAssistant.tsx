@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useLibrary } from '../../context/LibraryContext';
 import { Book, AiRecommendation } from '../../types';
+import { searchCatalogAi } from '../../services/onlineBookSearch';
 import { BookCoverImage } from '../catalog/BookCoverImage';
 import {
   Sparkles,
@@ -64,28 +65,25 @@ export const AiSearchAssistant: React.FC<AiSearchAssistantProps> = ({
     setRecommendations([]);
 
     try {
-      const res = await fetch('/api/gemini/semantic-search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userQuery: textToSearch,
-          catalog: books,
-        }),
-      });
-
-      const data = await res.json();
+      console.info(`[AiSearchAssistant] Ricerca semantica per query: "${textToSearch}"...`);
+      const data = await searchCatalogAi(textToSearch, books);
 
       if (data.success) {
         setGeneralAdvice(data.generalAdvice || null);
         setRecommendations(data.recommendations || []);
         triggerScanFeedback('success', 'Consigli di lettura personalizzati generati dall\'AI!');
       } else {
-        setGeneralAdvice(data.aiAdvice || 'Nessun risultato disponibile.');
+        setGeneralAdvice(data.error || 'Nessun risultato disponibile.');
       }
     } catch (err: any) {
-      console.error(err);
+      console.error('[AiSearchAssistant] ERRORE DETTAGLIATO RICERCA SEMANTICA AI:', {
+        query: textToSearch,
+        errorMessage: err?.message || String(err),
+        stack: err?.stack,
+        error: err,
+      });
       triggerScanFeedback('error', 'Errore durante la ricerca AI.');
-      setGeneralAdvice('Si è verificato un errore di connessione durante la ricerca.');
+      setGeneralAdvice('Si è verificato un errore durante la ricerca semantica. Consulta la console del browser per i dettagli.');
     } finally {
       setIsLoading(false);
     }

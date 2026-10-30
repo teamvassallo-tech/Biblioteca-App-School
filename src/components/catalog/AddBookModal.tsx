@@ -4,6 +4,7 @@ import { Book, GENRE_OPTIONS, AGE_GROUP_OPTIONS } from '../../types';
 import { BookCoverImage } from './BookCoverImage';
 import { generateBookCoverDataUrl } from '../../utils/coverGenerator';
 import { classifyBook, BookClassification } from '../../utils/bookClassifier';
+import { searchBookByIsbn, ocrBookImage } from '../../services/onlineBookSearch';
 import {
   X,
   Barcode,
@@ -102,7 +103,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
 
   if (!isOpen) return null;
 
-  // 1. Perform Online ISBN Lookup via /api/isbn/:isbn
+  // 1. Perform Online ISBN Lookup with API key fallback, try/catch with console error, and public APIs (Google Books / Open Library)
   const handleIsbnLookup = async (codeToSearch?: string) => {
     const targetIsbn = (codeToSearch || isbnInput).trim().replace(/[^0-9X]/gi, '');
     if (!targetIsbn) {
@@ -115,14 +116,13 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     setLookupSource(null);
 
     try {
-      const qParams = new URLSearchParams();
-      if (settings?.isbndbApiKey) qParams.set('isbndbKey', settings.isbndbApiKey);
-      if (settings?.worldcatWskey) qParams.set('worldcatKey', settings.worldcatWskey);
-      if (settings?.librarythingDevKey) qParams.set('librarythingKey', settings.librarythingDevKey);
-      const qStr = qParams.toString() ? `?${qParams.toString()}` : '';
-
-      const res = await fetch(`/api/isbn/${encodeURIComponent(targetIsbn)}${qStr}`);
-      const data = await res.json();
+      console.info(`[AddBookModal] Avvio ricerca per ISBN: ${targetIsbn}...`);
+      const data = await searchBookByIsbn(targetIsbn, {
+        isbndbApiKey: settings?.isbndbApiKey,
+        worldcatWskey: settings?.worldcatWskey,
+        librarythingDevKey: settings?.librarythingDevKey,
+        schoolName: settings?.schoolName,
+      });
 
       if (data.found) {
         setTitle(data.title || '');
@@ -133,17 +133,19 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
         setIsbn(data.isbn || targetIsbn);
         if (data.description) setSynopsis(data.description);
 
-        // Intelligent accurate classification (Genere scolastico ed Età consigliata)
+        // Accurate classification (school genre and recommended age)
         const classification = classifyBook(
           data.title || '',
           data.authors || [],
           data.description || '',
           data.categories || [],
-          data.deweyClassification || ''
+          ''
         );
-        setGenre(classification.genre);
-        setAgeGroup(classification.ageGroup);
-        setDetectedClassification(classification);
+        const resolvedGenre = data.genre || classification.genre;
+        const resolvedAge = data.ageGroup || classification.ageGroup;
+        setGenre(resolvedGenre);
+        setAgeGroup(resolvedAge);
+        setDetectedClassification({ ...classification, genre: resolvedGenre, ageGroup: resolvedAge });
 
         // Set or guarantee cover
         if (data.coverCandidates && Array.isArray(data.coverCandidates)) {
@@ -155,11 +157,10 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
         if (data.coverUrl) {
           setCoverUrl(data.coverUrl);
         } else {
-          // Guaranteed stylized cover
           const guaranteed = generateBookCoverDataUrl(
             data.title || 'Nuovo Libro',
             authStr || 'Autore',
-            classification.genre,
+            resolvedGenre,
             settings?.schoolName
           );
           setCoverUrl(guaranteed);
@@ -169,16 +170,23 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
         const srcName = data.source || 'Banche dati';
         triggerScanFeedback('success', `Trovato su ${srcName}: "${data.title}" con copertina!`);
       } else {
-        // Not found on public DB -> fallback prompt
+        // Not found on public DB or Gemini
         setIsbn(targetIsbn);
         setOnlineLookupError(
-          data.message || 'Nessun dato trovato per questo ISBN nelle banche dati collegate. Puoi inserire i dati a mano o scattare una foto al frontespizio con Gemini AI.'
+          data.message || 'Nessun dato trovato per questo ISBN nelle banche dati collegate. Puoi inserire i dati a mano o scattare una foto al frontespizio.'
         );
-        triggerScanFeedback('error', 'ISBN non trovato nelle banche dati.');
+        triggerScanFeedback('error', 'ISBN non trovato nelle banche dati collegate.');
       }
     } catch (err: any) {
-      console.error(err);
-      setOnlineLookupError('Errore di connessione durante la ricerca online.');
+      console.error('[AddBookModal] ERRORE DETTAGLIATO RICERCA ONLINE ISBN:', {
+        isbn: targetIsbn,
+        errorMessage: err?.message || String(err),
+        stack: err?.stack,
+        error: err,
+      });
+      setOnlineLookupError(
+        `Errore durante la ricerca online: ${err?.message || 'verifica la connessione internet'}. Consulta la console per i dettagli completi.`
+      );
       triggerScanFeedback('error', 'Errore durante la ricerca online dell\'ISBN.');
     } finally {
       setIsSearchingOnline(false);
@@ -205,15 +213,10 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     setOnlineLookupError(null);
 
     try {
-      const res = await fetch('/api/gemini/ocr-book', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64, mimeType }),
-      });
-      const json = await res.json();
+      const res = await ocrBookImage(base64, mimeType);
 
-      if (json.success && json.data) {
-        const d = json.data;
+      if (res.success && res.data) {
+        const d = res.data;
         if (d.title) setTitle(d.title);
         if (d.authors) setAuthors(Array.isArray(d.authors) ? d.authors.join(', ') : d.authors);
         if (d.publisher) setPublisher(d.publisher);
@@ -236,11 +239,15 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
 
         triggerScanFeedback('success', `Analisi AI completata! Estratto: "${d.title}" (${resolvedGenre})`);
       } else {
-        setOnlineLookupError('L\'AI non è riuscita a estrarre dati sufficienti dall\'immagine.');
+        setOnlineLookupError(res.error || 'L\'AI non è riuscita a estrarre dati sufficienti dall\'immagine.');
       }
     } catch (e: any) {
-      console.error(e);
-      setOnlineLookupError('Errore durante l\'analisi con Gemini Vision OCR.');
+      console.error('[AddBookModal] ERRORE DETTAGLIATO OCR FRONTESPIZIO:', {
+        errorMessage: e?.message || String(e),
+        stack: e?.stack,
+        error: e,
+      });
+      setOnlineLookupError('Errore durante l\'analisi con Gemini Vision OCR. Dettagli in console.');
       triggerScanFeedback('error', 'Errore elaborazione OCR immagine');
     } finally {
       setIsOcrProcessing(false);
