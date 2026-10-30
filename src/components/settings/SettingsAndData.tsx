@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useLibrary } from '../../context/LibraryContext';
 import {
   exportAllToJson,
@@ -31,9 +31,16 @@ import {
   Key,
   Image as ImageIcon,
   Loader2,
-  Palette
+  Palette,
+  School,
+  LogOut,
+  User,
+  ShieldCheck,
+  Building2,
+  ArrowRight,
 } from 'lucide-react';
 import { VisualLayoutSettings } from './VisualLayoutSettings';
+import { SchoolSwitcherModal } from '../auth/SchoolSwitcherModal';
 
 export const SettingsAndData: React.FC = () => {
   const {
@@ -41,30 +48,45 @@ export const SettingsAndData: React.FC = () => {
     students,
     loans,
     settings,
+    currentUser,
+    currentSchool,
+    allSchools,
     updateSettings,
     updateBook,
+    resetCurrentSchoolData,
     resetTotalSystem,
     restoreDataPackage,
+    logout,
     triggerScanFeedback,
   } = useLibrary();
+
+  // Multi-Tenant School Switcher State
+  const [isSchoolSwitcherOpen, setIsSchoolSwitcherOpen] = useState(false);
 
   // General Settings State
   const [libraryName, setLibraryName] = useState(settings.libraryName);
   const [schoolName, setSchoolName] = useState(settings.schoolName);
   const [defaultDuration, setDefaultDuration] = useState(settings.defaultLoanDurationDays);
 
+  useEffect(() => {
+    setLibraryName(settings.libraryName);
+    setSchoolName(settings.schoolName);
+    setDefaultDuration(settings.defaultLoanDurationDays);
+  }, [settings]);
+
   // External Bibliographic Database Credentials State
   const [isbndbKey, setIsbndbKey] = useState(settings.isbndbApiKey || '');
   const [worldcatKey, setWorldcatKey] = useState(settings.worldcatWskey || '');
   const [librarythingKey, setLibrarythingKey] = useState(settings.librarythingDevKey || '');
 
+  // Reset Security Modal State
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [resetScope, setResetScope] = useState<'current_school' | 'total'>('current_school');
+  const [confirmDeleteText, setConfirmDeleteText] = useState('');
+
   // Batch Cover Recovery State
   const [isBatchRunning, setIsBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; fixed: number } | null>(null);
-
-  // Reset Security Modal State
-  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [confirmDeleteText, setConfirmDeleteText] = useState('');
 
   // Import State
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -264,20 +286,88 @@ export const SettingsAndData: React.FC = () => {
     reader.readAsText(file);
   };
 
-  // Critical System Reset Confirmation
-  const handleConfirmTotalReset = () => {
+  // Critical Reset Confirmation
+  const handleConfirmReset = () => {
     if (confirmDeleteText.trim().toUpperCase() !== 'CANCELLA') {
       triggerScanFeedback('error', 'Parola chiave di sicurezza non corretta. Digita "CANCELLA".');
       return;
     }
 
-    resetTotalSystem();
+    if (resetScope === 'current_school') {
+      resetCurrentSchoolData();
+    } else {
+      resetTotalSystem();
+    }
+
     setIsResetModalOpen(false);
     setConfirmDeleteText('');
   };
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
+      {/* 0. Profilo Scuola & Gestione Multi-Tenant */}
+      <div className="bg-gradient-to-r from-indigo-900 to-slate-900 rounded-3xl p-6 text-white shadow-lg space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="p-3 rounded-2xl bg-white/10 text-white shrink-0">
+              <School className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                  Tenant Attivo
+                </span>
+                <span className="text-xs font-mono bg-white/15 px-2 py-0.5 rounded-md text-indigo-200">
+                  School ID: {currentSchool?.id}
+                </span>
+              </div>
+              <h2 className="text-xl font-black text-white mt-1">
+                {currentSchool?.name}
+              </h2>
+              <p className="text-xs text-indigo-200/80 mt-0.5">
+                {currentSchool?.city ? `${currentSchool.city} • ` : ''}Codice Meccanografico: {currentSchool?.code || 'N/D'} • {currentSchool?.libraryName}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsSchoolSwitcherOpen(true)}
+              className="px-4 py-2 bg-white text-indigo-900 hover:bg-indigo-50 rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-sm cursor-pointer"
+            >
+              <School className="w-4 h-4 text-indigo-600" />
+              <span>Cambia Scuola ({allSchools.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={logout}
+              className="px-3.5 py-2 bg-white/10 hover:bg-rose-500/30 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 border border-white/20 cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Disconnetti</span>
+            </button>
+          </div>
+        </div>
+
+        {/* User Account Info Bar */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-white/5 p-3.5 rounded-2xl border border-white/10">
+          <div>
+            <span className="text-indigo-300/80 block text-[11px]">Operatore Connesso:</span>
+            <span className="font-bold text-white">{currentUser?.fullName}</span>
+          </div>
+          <div>
+            <span className="text-indigo-300/80 block text-[11px]">Email Istituzionale:</span>
+            <span className="font-mono text-white/90">{currentUser?.email}</span>
+          </div>
+          <div>
+            <span className="text-indigo-300/80 block text-[11px]">Ruolo &amp; Permessi:</span>
+            <span className="font-bold text-emerald-300 capitalize">{currentUser?.role}</span>
+          </div>
+        </div>
+      </div>
+
       {/* 1. General Settings */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
         <div className="flex items-center gap-3 border-b border-slate-100 pb-4 mb-5">
@@ -743,49 +833,63 @@ export const SettingsAndData: React.FC = () => {
         )}
       </div>
 
-      {/* 4. CRITICAL REQUIREMENT: Reset Totale Sistema */}
-      <div className="bg-rose-50 border-2 border-rose-200 rounded-2xl p-6 shadow-xs">
+      {/* 4. CRITICAL REQUIREMENT: Reset Archivi (Multi-Tenant) */}
+      <div className="bg-rose-50 border-2 border-rose-200 rounded-2xl p-6 shadow-xs space-y-4">
         <div className="flex items-start gap-3">
           <div className="p-2.5 rounded-xl bg-rose-600 text-white shrink-0 mt-0.5 shadow-sm">
             <ShieldAlert className="w-6 h-6" />
           </div>
           <div className="flex-1">
             <h3 className="text-lg font-extrabold text-rose-950">
-              Zona di Pericolo: Reset Totale Sistema
+              Zona di Pericolo: Reset Archivi &amp; Dati
             </h3>
             <p className="text-xs sm:text-sm text-rose-800 mt-1 leading-relaxed max-w-2xl">
-              Questa azione cancellerà istantaneamente e in modo irreversibile{' '}
-              <strong>tutti i libri a catalogo ({books.length})</strong>,{' '}
-              <strong>tutti gli alunni ({students.length})</strong> e{' '}
-              <strong>l&apos;intero registro prestiti ({loans.length})</strong>, riportando l&apos;applicazione
-              allo stato vergine iniziale completamente vuoto.
+              Puoi scegliere se azzerare esclusivamente i dati dell&apos;istituto attualmente connesso (
+              <strong>{currentSchool?.name}</strong>: {books.length} volumi, {students.length} alunni, {loans.length} prestiti)
+              preservando intatti tutti gli altri istituti, oppure procedere con un reset totale globale.
             </p>
 
-            <div className="mt-4">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 onClick={() => {
+                  setResetScope('current_school');
                   setConfirmDeleteText('');
                   setIsResetModalOpen(true);
                 }}
-                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-rose-600/20 transition flex items-center gap-2"
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-rose-600/20 transition flex items-center gap-2 cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4" />
-                <span>Reset Totale Sistema...</span>
+                <span>Azzera Solo i Dati di Questa Scuola ({currentSchool?.name})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setResetScope('total');
+                  setConfirmDeleteText('');
+                  setIsResetModalOpen(true);
+                }}
+                className="px-4 py-2.5 bg-rose-900 hover:bg-black text-rose-100 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+              >
+                <AlertTriangle className="w-4 h-4 text-rose-400" />
+                <span>Reset Globale (Tutte le Scuole)</span>
               </button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Security Confirmation Modal for Total Reset */}
+      {/* Security Confirmation Modal for Reset */}
       {isResetModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-rose-300 overflow-hidden animate-fadeIn">
             <div className="bg-rose-900 text-white px-6 py-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-rose-300" />
-                <h3 className="font-extrabold text-lg">Conferma Reset Totale</h3>
+                <h3 className="font-extrabold text-lg">
+                  {resetScope === 'current_school' ? 'Conferma Reset Scuola Attiva' : 'Conferma Reset Globale'}
+                </h3>
               </div>
               <button
                 onClick={() => setIsResetModalOpen(false)}
@@ -797,12 +901,21 @@ export const SettingsAndData: React.FC = () => {
 
             <div className="p-6 space-y-4">
               <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
-                Stai per azzerare completamente tutti gli archivi della biblioteca scolastica.
-                Tutti i libri, gli alunni e i prestiti saranno rimossi per sempre dalla memoria locale.
+                {resetScope === 'current_school' ? (
+                  <>
+                    Stai per azzerare <strong>solo i dati della scuola &quot;{currentSchool?.name}&quot;</strong> ({books.length} libri, {students.length} alunni, {loans.length} prestiti).
+                    I dati delle altre scuole nel sistema rimarranno completamente intatti e protetti.
+                  </>
+                ) : (
+                  <>
+                    Stai per azzerare <strong>tutti gli archivi di tutte le scuole registrate</strong> nel sistema.
+                    Questa operazione è irreversibile.
+                  </>
+                )}
               </p>
 
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 font-medium">
-                Per confermare l&apos;azzeramento totale, digita la parola{' '}
+                Per confermare l&apos;azzeramento, digita la parola{' '}
                 <strong className="font-mono text-rose-700 font-extrabold">CANCELLA</strong> nel
                 campo sottostante:
               </div>
@@ -828,18 +941,24 @@ export const SettingsAndData: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmTotalReset}
+                  onClick={handleConfirmReset}
                   disabled={confirmDeleteText.trim().toUpperCase() !== 'CANCELLA'}
                   className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:pointer-events-none text-white rounded-xl text-xs sm:text-sm font-extrabold shadow-md shadow-rose-600/20 transition flex items-center gap-1.5"
                 >
                   <RotateCcw className="w-4 h-4" />
-                  <span>Sì, Azzera Tutto Ora</span>
+                  <span>Sì, Procedi con il Reset</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* School Switcher Modal */}
+      <SchoolSwitcherModal
+        isOpen={isSchoolSwitcherOpen}
+        onClose={() => setIsSchoolSwitcherOpen(false)}
+      />
     </div>
   );
 };

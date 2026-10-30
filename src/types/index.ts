@@ -1,5 +1,29 @@
+export interface SchoolTenant {
+  id: string; // Unique school ID / slug, e.g. "ic-erasmo"
+  code: string; // Codice Meccanografico / Codice Univoco Scuola, es. "MIIC86900D"
+  name: string; // Denominazione Ufficiale, es. "I.C. Erasmo da Rotterdam"
+  city?: string; // Comune / Provincia
+  libraryName?: string; // Nome della biblioteca scolastica
+  address?: string;
+  createdAt: string;
+}
+
+export type UserRole = 'docente' | 'bibliotecario' | 'amministratore' | 'collaboratore';
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  schoolId: string; // Foreign key al SchoolTenant
+  schoolName: string;
+  password?: string;
+  createdAt: string;
+}
+
 export interface Book {
   id: string;
+  schoolId?: string; // Tenant School ID (per isolamento multi-scuola)
   inventoryCode: string; // Unique library internal code, e.g. "LIB-0001"
   isbn?: string; // Standard ISBN-10 or ISBN-13
   title: string;
@@ -46,6 +70,7 @@ export const AGE_GROUP_OPTIONS: string[] = [
 
 export interface Student {
   id: string;
+  schoolId?: string; // Tenant School ID
   studentCode: string; // Unique student card barcode, e.g. "ALU-0001"
   firstName: string;
   lastName: string;
@@ -59,6 +84,7 @@ export interface Student {
 
 export interface Loan {
   id: string;
+  schoolId?: string; // Tenant School ID
   bookId: string;
   bookTitle: string;
   bookInventoryCode: string;
@@ -105,6 +131,7 @@ export interface VisualLayoutPreset {
 }
 
 export interface AppSettings {
+  schoolId?: string;
   libraryName: string;
   schoolName: string;
   defaultLoanDurationDays: number;

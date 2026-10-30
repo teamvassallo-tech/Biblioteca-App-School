@@ -14,7 +14,11 @@ import {
   Plus,
   Menu,
   X,
-  Palette
+  Palette,
+  School,
+  LogOut,
+  Building2,
+  User,
 } from 'lucide-react';
 
 export type NavTab = 'dashboard' | 'catalogo' | 'alunni' | 'ai' | 'impostazioni';
@@ -23,10 +27,16 @@ interface NavbarProps {
   currentTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   onOpenAddBookModal?: () => void;
+  onOpenSchoolSwitcher?: () => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenAddBookModal }) => {
-  const { books, loans, settings, updateSettings } = useLibrary();
+export const Navbar: React.FC<NavbarProps> = ({
+  currentTab,
+  onSelectTab,
+  onOpenAddBookModal,
+  onOpenSchoolSwitcher,
+}) => {
+  const { books, loans, settings, updateSettings, currentUser, currentSchool, logout } = useLibrary();
 
   const theme = getThemeClasses(settings.colorTheme);
   const activePreset = getPresetById(settings.visualLayoutPreset);
@@ -41,7 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenA
         <div className="flex items-center justify-between h-16 sm:h-18 gap-2">
           {/* Logo & Title */}
           <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr ${theme.brandGradient} flex items-center justify-center text-white shadow-md`}>
+            <div className={`w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr ${theme.brandGradient} flex items-center justify-center text-white shadow-md shrink-0`}>
               <BookOpen className="w-6 h-6" />
             </div>
             <div>
@@ -49,9 +59,22 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenA
                 <span className="font-extrabold text-slate-900 text-lg sm:text-xl tracking-tight">
                   {settings.libraryName || 'BiblioScuola'}
                 </span>
-                <span className={`hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${theme.activeBadge}`}>
-                  {settings.schoolName || 'Scuola'}
-                </span>
+
+                {/* School Tenant Badge (Multi-Tenant) */}
+                <button
+                  type="button"
+                  onClick={onOpenSchoolSwitcher}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold border transition cursor-pointer ${theme.activeBadge} hover:shadow-xs`}
+                  title={`Scuola attiva: ${currentSchool?.name} (ID: ${currentSchool?.id}). Clicca per cambiare scuola.`}
+                >
+                  <School className="w-3.5 h-3.5 text-indigo-600" />
+                  <span className="max-w-[140px] sm:max-w-[220px] truncate">
+                    {currentSchool?.name || settings.schoolName}
+                  </span>
+                  <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-white/70 text-indigo-900 border border-indigo-200">
+                    {currentSchool?.id}
+                  </span>
+                </button>
               </div>
               <p className="text-xs text-slate-500 hidden md:block">
                 Gestionale Biblioteca Scolastica • Barcode USB Scanner Ready
@@ -128,6 +151,29 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenA
                 </>
               )}
             </button>
+
+            {/* User Session & Logout */}
+            {currentUser && (
+              <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+                <div className="hidden xl:flex flex-col text-right">
+                  <span className="text-xs font-bold text-slate-800 leading-tight truncate max-w-[130px]">
+                    {currentUser.fullName}
+                  </span>
+                  <span className="text-[10px] text-slate-500 capitalize">
+                    {currentUser.role}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border border-slate-200 text-slate-600 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                  title="Disconnetti dalla scuola"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline text-xs">Esci</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -221,8 +267,9 @@ export const SidebarNavbar: React.FC<NavbarProps> = ({
   currentTab,
   onSelectTab,
   onOpenAddBookModal,
+  onOpenSchoolSwitcher,
 }) => {
-  const { books, loans, settings, updateSettings } = useLibrary();
+  const { books, loans, settings, updateSettings, currentUser, currentSchool, logout } = useLibrary();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const theme = getThemeClasses(settings.colorTheme);
@@ -247,9 +294,14 @@ export const SidebarNavbar: React.FC<NavbarProps> = ({
             <span className="font-extrabold text-slate-900 text-sm block leading-tight">
               {settings.libraryName || 'BiblioScuola'}
             </span>
-            <span className="text-[11px] text-slate-500">
-              {settings.schoolName || 'Scuola'}
-            </span>
+            <button
+              type="button"
+              onClick={onOpenSchoolSwitcher}
+              className="text-[11px] text-indigo-700 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+            >
+              <span>{currentSchool?.name || settings.schoolName}</span>
+              <span className="text-[10px] font-mono opacity-80">[{currentSchool?.id}]</span>
+            </button>
           </div>
         </div>
 
@@ -279,6 +331,25 @@ export const SidebarNavbar: React.FC<NavbarProps> = ({
       {/* Mobile Dropdown Drawer */}
       {isMobileMenuOpen && (
         <div className="md:hidden bg-white border-b border-slate-200 p-4 space-y-2 sticky top-[57px] z-30 shadow-lg animate-fadeIn">
+          {/* Mobile School Switcher Action */}
+          <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl flex items-center justify-between">
+            <div className="min-w-0 pr-2">
+              <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider block">Scuola Connessa</span>
+              <span className="font-extrabold text-xs text-indigo-950 truncate block">{currentSchool?.name}</span>
+            </div>
+            {onOpenSchoolSwitcher && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMenuOpen(false);
+                  onOpenSchoolSwitcher();
+                }}
+                className="px-2.5 py-1 text-xs font-bold bg-white text-indigo-700 border border-indigo-200 rounded-lg shadow-2xs"
+              >
+                Cambia
+              </button>
+            )}
+          </div>
           <button
             onClick={() => handleNavClick('dashboard')}
             className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition ${
@@ -357,6 +428,31 @@ export const SidebarNavbar: React.FC<NavbarProps> = ({
                 {settings.schoolName || 'Scuola'}
               </p>
             </div>
+          </div>
+
+          {/* School Tenant Card (Multi-Tenant) */}
+          <div className="p-3 rounded-2xl bg-indigo-50/70 border border-indigo-200/80 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider flex items-center gap-1">
+                <School className="w-3.5 h-3.5" />
+                Scuola Attiva
+              </span>
+              <span className="text-[10px] font-mono font-bold text-indigo-900 bg-white px-1.5 py-0.5 rounded border border-indigo-200 shadow-2xs">
+                {currentSchool?.id}
+              </span>
+            </div>
+            <div className="font-extrabold text-xs text-indigo-950 leading-snug">
+              {currentSchool?.name || settings.schoolName}
+            </div>
+            {onOpenSchoolSwitcher && (
+              <button
+                type="button"
+                onClick={onOpenSchoolSwitcher}
+                className="w-full text-center py-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 hover:bg-white rounded-lg transition border border-dashed border-indigo-300 cursor-pointer"
+              >
+                Cambia Scuola / Tenant...
+              </button>
+            )}
           </div>
 
           {/* Quick Action Button */}
@@ -534,6 +630,28 @@ export const SidebarNavbar: React.FC<NavbarProps> = ({
           <div className="text-[10px] text-slate-400 text-center">
             BiblioScuola • Scuola Italiana
           </div>
+
+          {/* User Account info & Logout */}
+          {currentUser && (
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+              <div className="min-w-0 pr-1">
+                <span className="font-bold text-slate-800 block truncate leading-tight text-xs">
+                  {currentUser.fullName}
+                </span>
+                <span className="text-[10px] text-slate-500 block truncate capitalize">
+                  {currentUser.role}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={logout}
+                className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition shrink-0 cursor-pointer"
+                title="Disconnetti dalla scuola"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       </aside>
     </>

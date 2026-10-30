@@ -11,11 +11,25 @@ import { NewLoanModal } from './components/dashboard/NewLoanModal';
 import { BookDetailModal } from './components/catalog/BookDetailModal';
 import { AddBookModal } from './components/catalog/AddBookModal';
 import { getContentWidthClass, getDensityPaddingClass } from './utils/layoutPresets';
+import { AuthScreen } from './components/auth/AuthScreen';
+import { SchoolSwitcherModal } from './components/auth/SchoolSwitcherModal';
 import { Book } from './types';
 
 function MainAppContent() {
-  const { settings } = useLibrary();
+  const { settings, currentUser, currentSchool } = useLibrary();
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
+
+  const [isSchoolSwitcherOpen, setIsSchoolSwitcherOpen] = useState(false);
+
+  // If user is not authenticated or no school selected, show multi-tenant login/registration screen
+  if (!currentUser || !currentSchool) {
+    return (
+      <>
+        <ScanFeedbackBanner />
+        <AuthScreen />
+      </>
+    );
+  }
 
   const isSidebar = settings.navPosition === 'sidebar';
   const widthClass = getContentWidthClass(settings.contentWidth);
@@ -52,12 +66,14 @@ function MainAppContent() {
           currentTab={currentTab}
           onSelectTab={setCurrentTab}
           onOpenAddBookModal={() => setIsAddBookModalOpen(true)}
+          onOpenSchoolSwitcher={() => setIsSchoolSwitcherOpen(true)}
         />
       ) : (
         <Navbar
           currentTab={currentTab}
           onSelectTab={setCurrentTab}
           onOpenAddBookModal={() => setIsAddBookModalOpen(true)}
+          onOpenSchoolSwitcher={() => setIsSchoolSwitcherOpen(true)}
         />
       )}
 
@@ -141,6 +157,12 @@ function MainAppContent() {
           onLoanBook={handleOpenLoanForBook}
         />
       )}
+
+      {/* Multi-Tenant School Switcher Modal */}
+      <SchoolSwitcherModal
+        isOpen={isSchoolSwitcherOpen}
+        onClose={() => setIsSchoolSwitcherOpen(false)}
+      />
     </div>
   );
 }
