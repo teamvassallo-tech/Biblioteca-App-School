@@ -215,10 +215,9 @@ async function getOriginalBookCoverCandidates(cleanIsbn: string): Promise<CoverC
 // 5. Crossref (Pubblicazioni accademiche, saggi, riviste e monografie con DOI/ISBN)
 // 6. Open Library (API diretta per edizione, copertine ID e motore di ricerca)
 // 7. Google Books API (con fallback di ricerca)
-// 8. Gemini AI Assistant (Enrichment sinossi, genere scolastico e fallback semantico)
-app.get('/api/isbn/:isbn', async (req: Request, res: Response) => {
+app.get(['/api/isbn/:isbn', '/api/isbn', '/isbn/:isbn', '/isbn'], async (req: Request, res: Response) => {
   try {
-    const rawIsbn = req.params.isbn;
+    const rawIsbn = req.params.isbn || (req.query.isbn as string) || '';
     const cleanIsbn = cleanIsbnString(rawIsbn);
 
     if (!cleanIsbn || (cleanIsbn.length !== 10 && cleanIsbn.length !== 13)) {
@@ -918,54 +917,6 @@ Restituisci ESCLUSIVAMENTE il codice SVG valido racchiuso all'interno di un bloc
   }
 });
 
-// 3. Gemini Book Metadata Enrichment / Fallback from title or partial info
-app.post('/api/gemini/book-lookup', async (req: Request, res: Response) => {
-  try {
-    const { query } = req.body;
-    if (!query || typeof query !== 'string') {
-      return res.status(400).json({ error: 'Query mancante' });
-    }
-
-    const response = await callGemini({
-      contents: `Sei un bibliotecario scolastico italiano. Analizza il seguente titolo, autore o frammento di informazioni su un libro per ragazzi/scolastico ed estrai con precisione i metadati: "${query}".`,
-      config: {
-        systemInstruction: 'Rispondi sempre in formato JSON valido. Usa solo le categorie previste per scuole primarie e secondarie.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING, description: 'Titolo completo del libro' },
-            authors: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: 'Elenco degli autori (Nome e Cognome)'
-            },
-            publisher: { type: Type.STRING, description: 'Casa editrice principale' },
-            publicationYear: { type: Type.STRING, description: 'Anno di pubblicazione (4 cifre)' },
-            description: { type: Type.STRING, description: 'Breve e accattivante sinossi del libro adatta per studenti e docenti (max 3-4 frasi)' },
-            genre: {
-              type: Type.STRING,
-              description: 'Genere tra: Narrativa, Avventura, Fumetti & Manga, Fiabe & Favole, Divulgazione & Scienze, Storia, Poesia & Teatro, Giallo & Mistero, Fantasy & Fantascienza, Albi Illustrati, Classici, Altro'
-            },
-            ageGroup: {
-              type: Type.STRING,
-              description: 'Fascia d\'età consigliata tra: Primaria (6-8 anni), Primaria (8-11 anni), Secondaria I grado (11-14 anni), Giovani Adulti (14+), Docenti & Genitori'
-            },
-            isbn: { type: Type.STRING, description: 'ISBN noto se disponibile, altrimenti stringa vuota' }
-          },
-          required: ['title', 'authors', 'publisher', 'description', 'genre', 'ageGroup']
-        }
-      }
-    });
-
-    const text = response.text?.trim() || '{}';
-    const parsed = JSON.parse(text);
-    return res.json({ success: true, data: parsed });
-  } catch (error: any) {
-    console.error('Gemini book-lookup failed:', error);
-    return res.status(500).json({ error: error?.message || 'Errore elaborazione AI' });
-  }
-});
 
 // 3. Gemini Vision OCR for Frontespizio / Copertina
 app.post('/api/gemini/ocr-book', async (req: Request, res: Response) => {

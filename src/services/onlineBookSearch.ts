@@ -452,8 +452,8 @@ export async function searchBookOnline(
     const qStr = qParams.toString() ? `?${qParams.toString()}` : '';
 
     const proxyUrl = isIsbn
-      ? `/api/isbn/${encodeURIComponent(clean)}${qStr}`
-      : `/api/book-search?query=${encodeURIComponent(clean)}${qStr}`;
+      ? `/api/isbn?isbn=${encodeURIComponent(clean)}${qStr ? `&${qStr.slice(1)}` : ''}`
+      : `/api/book-search?query=${encodeURIComponent(clean)}${qStr ? `&${qStr.slice(1)}` : ''}`;
 
     console.info(`[Ricerca Banche Dati Ufficiali] Interrogazione proxy: ${proxyUrl}...`);
     const res = await fetch(proxyUrl);
