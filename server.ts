@@ -3,7 +3,6 @@ import type { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
 import { generateBookCoverDataUrl } from './src/utils/coverGenerator';
 
 dotenv.config();
@@ -17,33 +16,73 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
-// Initialize GoogleGenAI SDK server-side (supporting both GEMINI_API_KEY and VITE_GEMINI_API_KEY)
-const activeGeminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
-const ai = new GoogleGenAI({
-  apiKey: activeGeminiKey,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+// Schema Type constants without external SDK
+const Type = {
+  STRING: 'STRING',
+  NUMBER: 'NUMBER',
+  INTEGER: 'INTEGER',
+  BOOLEAN: 'BOOLEAN',
+  ARRAY: 'ARRAY',
+  OBJECT: 'OBJECT',
+} as const;
 
-// Resilient Gemini AI Caller with automatic model fallback to avoid quota limits
+// Active API Key (supporting both GEMINI_API_KEY and VITE_GEMINI_API_KEY)
+const activeGeminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+
+// Resilient native REST caller with automatic model fallback (Zero external SDK)
 async function callGemini(options: { contents: any; config?: any }) {
+  if (!activeGeminiKey) {
+    throw new Error('Chiave API non configurata nel server');
+  }
   const models = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
   let lastError: any = null;
 
   for (const model of models) {
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: options.contents,
-        config: options.config,
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(activeGeminiKey)}`;
+
+      let contentsPayload: any;
+      if (typeof options.contents === 'string') {
+        contentsPayload = [{ parts: [{ text: options.contents }] }];
+      } else if (Array.isArray(options.contents)) {
+        contentsPayload = options.contents;
+      } else {
+        contentsPayload = [options.contents];
+      }
+
+      const bodyPayload: any = {
+        contents: contentsPayload,
+      };
+
+      if (options.config?.responseMimeType) {
+        bodyPayload.generationConfig = {
+          responseMimeType: options.config.responseMimeType,
+        };
+        if (options.config?.responseSchema) {
+          bodyPayload.generationConfig.responseSchema = options.config.responseSchema;
+        }
+      }
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload),
       });
-      return response;
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`REST error (${res.status}): ${errText}`);
+      }
+
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      return {
+        text,
+        candidates: data.candidates,
+      };
     } catch (err: any) {
       lastError = err;
-      console.warn(`Gemini model "${model}" call failed (${err?.message || err}), trying fallback...`);
+      console.warn(`Model "${model}" call failed (${err?.message || err}), trying fallback...`);
     }
   }
 
