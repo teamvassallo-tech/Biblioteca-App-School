@@ -545,7 +545,7 @@ app.get(['/api/isbn/:isbn', '/api/isbn', '/isbn/:isbn', '/isbn'], async (req: Re
       pageCount,
       bniIdentifier,
       deweyClassification,
-      source: foundSource || 'Banche dati bibliotecarie collegate (BNI/SBN/OpenLibrary/GoogleBooks)',
+      source: foundSource || 'Cataloghi Bibliografici Ufficiali (API REST)',
     });
   } catch (error: any) {
     console.error('ISBN lookup failed:', error);
@@ -787,7 +787,7 @@ app.get(['/api/book-search', '/api/search-book', '/book-search', '/search-book']
       coverCandidates: originalCandidates,
       categories,
       pageCount,
-      source: foundSource || 'Banche dati bibliotecarie collegate (OPAC SBN / Open Library / Google Books)',
+      source: foundSource || 'Cataloghi Bibliografici Ufficiali (API REST)',
     });
   } catch (error: any) {
     console.error('Book text search failed:', error);
@@ -896,7 +896,7 @@ Restituisci ESCLUSIVAMENTE il codice SVG valido racchiuso all'interno di un bloc
           return res.json({
             success: true,
             coverUrl: `data:image/svg+xml;base64,${base64}`,
-            source: 'Gemini AI Cover Studio',
+            source: 'Studio Grafico Copertine',
           });
         }
       } catch (aiErr) {

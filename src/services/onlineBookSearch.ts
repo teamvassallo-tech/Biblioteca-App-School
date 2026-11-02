@@ -438,7 +438,7 @@ export async function searchBookOnline(
   const result = await searchBook(rawQuery);
   return {
     ...result,
-    source: result.source || 'Banche Dati Ufficiali (OPAC SBN / BNI / Crossref / Google Books)',
+    source: result.source || 'Cataloghi Bibliografici Ufficiali (API REST)',
   };
 }
 

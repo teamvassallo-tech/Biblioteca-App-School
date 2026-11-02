@@ -292,7 +292,7 @@ export default async function handler(req: any, res: any) {
       coverUrl: finalCover,
       coverCandidates,
       categories,
-      source: foundSource || 'Banche dati bibliotecarie collegate (OPAC SBN / Open Library / Google Books)',
+      source: foundSource || 'Cataloghi Bibliografici Ufficiali (API REST)',
     });
   } catch (err: any) {
     console.error('api/isbn error:', err);

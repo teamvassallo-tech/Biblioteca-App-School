@@ -278,7 +278,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     }
 
     setIsGeneratingAiCover(true);
-    triggerScanFeedback('info', 'Generazione copertina artistica con Gemini AI in corso...');
+    triggerScanFeedback('info', 'Generazione copertina artistica in corso...');
 
     try {
       const res = await fetch('/api/gemini/generate-cover', {
@@ -297,7 +297,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
       const data = await res.json();
       if (data.success && data.coverUrl) {
         setCoverUrl(data.coverUrl);
-        triggerScanFeedback('success', 'Nuova copertina generata con successo da Gemini AI!');
+        triggerScanFeedback('success', 'Nuova copertina generata con successo!');
       } else {
         const fallback = generateBookCoverDataUrl(
           currentTitle || 'Nuovo Libro',
@@ -700,7 +700,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
                     onClick={handleGenerateAiCover}
                     disabled={isGeneratingAiCover}
                     className="w-full px-2 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 shadow-sm transition disabled:opacity-50 active:scale-95"
-                    title="Genera copertina artistica personalizzata per la trama del libro con Gemini AI"
+                    title="Genera copertina artistica personalizzata per la trama del libro"
                   >
                     {isGeneratingAiCover ? (
                       <>

@@ -384,7 +384,7 @@ export default async function handler(req: any, res: any) {
       pageCount,
       coverUrl: finalCover,
       coverCandidates,
-      source: foundSource || 'Banche Dati Ufficiali Collegate (OPAC SBN / BNI / Crossref / Google Books)',
+      source: foundSource || 'Cataloghi Bibliografici Ufficiali (API REST)',
     });
   } catch (err: any) {
     console.error('api/search-book error:', err);

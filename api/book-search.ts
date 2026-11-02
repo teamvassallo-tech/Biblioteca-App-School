@@ -194,7 +194,7 @@ export default async function handler(req: any, res: any) {
       description,
       coverUrl: coverUrl || (foundIsbn ? `https://images-na.ssl-images-amazon.com/images/P/${foundIsbn}.01.LZZZZZZZ.jpg` : undefined),
       categories,
-      source: foundSource || 'Banche dati bibliotecarie collegate (OPAC SBN / Open Library / Google Books)',
+      source: foundSource || 'Cataloghi Bibliografici Ufficiali (API REST)',
     });
   } catch (err: any) {
     console.error('api/book-search error:', err);

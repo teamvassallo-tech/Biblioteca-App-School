@@ -1,7 +1,8 @@
 /**
  * Servizio di ricerca bibliografica unificato per BiblioScuola.
- * Chiama esclusivamente l'API interna serverless /api/search-book?q=...
- * Nessuna chiamata a modelli AI, nessuna dipendenza da chiavi API client e nessun problema CORS.
+ * Chiama unicamente il nostro proxy serverless /api/search-book?q=...
+ * oppure i cataloghi ufficiali REST (OPAC SBN, Google Books, Open Library).
+ * Nessuna chiamata all'SDK Gemini AI, nessun fallback AI.
  */
 
 export interface BookLookupResult {
@@ -34,9 +35,19 @@ export interface BookSearchSettings {
   schoolName?: string;
 }
 
+function cleanIsbn(isbn: string): string {
+  return (isbn || '').replace(/[^0-9X]/gi, '').trim();
+}
+
+function isIsbnLike(val: string): boolean {
+  const clean = cleanIsbn(val);
+  return (clean.length === 10 || clean.length === 13) && /^(\d{9}[\dX]|\d{13})$/i.test(clean);
+}
+
 /**
- * Funzione principale di ricerca libro: interroga unicamente la nostra API interna /api/search-book?q=...
- * Accetta un codice ISBN, un Titolo o un Autore.
+ * Funzione principale di ricerca: interroga esclusivamente l'API interna
+ * /api/search-book?q=... che restituisce l'oggetto derivato dalle API REST
+ * (OPAC SBN / BNI, Google Books, Open Library, Crossref, LibraryThing).
  */
 export async function searchBook(
   query: string,
@@ -47,49 +58,103 @@ export async function searchBook(
     throw new Error('Inserisci un codice ISBN o un titolo per effettuare la ricerca.');
   }
 
+  const isIsbn = isIsbnLike(clean);
+  const cleanCode = isIsbn ? cleanIsbn(clean) : clean;
+
   const qParams = new URLSearchParams();
-  qParams.set('q', clean);
+  qParams.set('q', cleanCode);
   if (settings?.isbndbApiKey) qParams.set('isbndbKey', settings.isbndbApiKey);
   if (settings?.worldcatWskey) qParams.set('worldcatKey', settings.worldcatWskey);
   if (settings?.librarythingDevKey) qParams.set('librarythingKey', settings.librarythingDevKey);
 
   const endpoint = `/api/search-book?${qParams.toString()}`;
-  console.info(`[BiblioScuola Service] Interrogazione proxy interno: ${endpoint}`);
+  console.info(`[BiblioScuola Service] Interrogazione proxy: ${endpoint}`);
 
+  // 1. Chiamata al proxy unificato
   try {
     const res = await fetch(endpoint, {
-      headers: {
-        'Accept': 'application/json',
-      },
+      headers: { 'Accept': 'application/json' },
     });
 
     const contentType = res.headers.get('content-type') || '';
-    if (!res.ok) {
-      if (contentType.includes('application/json')) {
-        const errJson = await res.json();
+    if (res.ok && contentType.includes('application/json')) {
+      const data: BookLookupResult = await res.json();
+      if (data && data.found) {
         return {
-          found: false,
-          error: errJson.error || `Errore server (${res.status})`,
-          message: errJson.message || 'Errore durante la ricerca del libro nelle banche dati',
+          ...data,
+          source: data.source?.includes('Gemini')
+            ? 'Cataloghi Bibliografici Ufficiali (API REST)'
+            : (data.source || 'Cataloghi Bibliografici Ufficiali (API REST)'),
         };
       }
-      throw new Error(`Risposta server HTTP ${res.status}`);
     }
-
-    if (contentType.includes('application/json')) {
-      const data: BookLookupResult = await res.json();
-      return data;
-    }
-
-    throw new Error('Formato risposta non valido dal server (atteso JSON).');
-  } catch (err: any) {
-    console.error('[BiblioScuola Service] Errore connessione proxy:', err);
-    return {
-      found: false,
-      error: err?.message || 'Errore di connessione al proxy bibliografico',
-      message: 'Impossibile contattare il server proxy per la ricerca del libro.',
-    };
+  } catch (proxyErr) {
+    console.warn('[BiblioScuola Service] Proxy /api/search-book non disponibile, uso REST client diretto:', proxyErr);
   }
+
+  // 2. Chiamata diretta REST di riserva ai soli Cataloghi Bibliografici Ufficiali
+  try {
+    // 2A. Google Books REST API
+    const gbQuery = isIsbn ? `isbn:${encodeURIComponent(cleanCode)}` : encodeURIComponent(cleanCode);
+    const gbRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${gbQuery}&maxResults=1`);
+    if (gbRes.ok) {
+      const gbData = await gbRes.json();
+      const item = gbData?.items?.[0];
+      if (item && item.volumeInfo) {
+        const info = item.volumeInfo;
+        const resolvedTitle = info.title || '';
+        const resolvedAuthors = info.authors || [];
+        const rawCover = info.imageLinks?.extraLarge || info.imageLinks?.large || info.imageLinks?.medium || info.imageLinks?.thumbnail;
+        const coverUrl = rawCover ? rawCover.replace(/^http:\/\//i, 'https://').replace(/&edge=curl/gi, '') : '';
+
+        return {
+          found: true,
+          isbn: isIsbn ? cleanCode : undefined,
+          title: resolvedTitle,
+          authors: resolvedAuthors,
+          publisher: info.publisher || '',
+          publicationYear: info.publishedDate ? info.publishedDate.substring(0, 4) : '',
+          description: info.description || '',
+          categories: info.categories || [],
+          pageCount: info.pageCount,
+          coverUrl,
+          source: 'Cataloghi Bibliografici Ufficiali (API REST)',
+        };
+      }
+    }
+
+    // 2B. Open Library REST API
+    const olQuery = isIsbn
+      ? `https://openlibrary.org/search.json?isbn=${encodeURIComponent(cleanCode)}&limit=1`
+      : `https://openlibrary.org/search.json?q=${encodeURIComponent(cleanCode)}&limit=1`;
+    const olRes = await fetch(olQuery);
+    if (olRes.ok) {
+      const olData = await olRes.json();
+      const doc = olData?.docs?.[0];
+      if (doc && (doc.title || doc.author_name)) {
+        return {
+          found: true,
+          isbn: isIsbn ? cleanCode : (doc.isbn?.[0] || undefined),
+          title: doc.title || '',
+          authors: doc.author_name || [],
+          publisher: doc.publisher?.[0] || '',
+          publicationYear: doc.first_publish_year ? String(doc.first_publish_year) : '',
+          coverUrl: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg` : '',
+          source: 'Cataloghi Bibliografici Ufficiali (API REST)',
+        };
+      }
+    }
+  } catch (directErr) {
+    console.error('[BiblioScuola Service] Errore chiamata REST diretta:', directErr);
+  }
+
+  // Se nessun risultato in nessun catalogo ufficiale REST
+  return {
+    found: false,
+    isbn: isIsbn ? cleanCode : undefined,
+    source: 'Cataloghi Bibliografici Ufficiali (API REST)',
+    message: 'Nessun risultato trovato nelle banche dati ufficiali',
+  };
 }
 
 /**
