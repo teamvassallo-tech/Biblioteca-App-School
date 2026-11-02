@@ -11,9 +11,21 @@
  */
 
 import { Book } from '../types';
-import { searchBook, BookSearchResult } from './bookService';
+import {
+  searchBookByISBN,
+  searchBookByIsbn as searchBookByIsbnFn,
+  searchBook,
+  BookSearchResult,
+  DatabaseSettings,
+} from './bookService';
 
-export { searchBook, type BookSearchResult };
+export {
+  searchBookByISBN,
+  searchBookByIsbnFn as searchBookByIsbnAlias,
+  searchBook,
+  type BookSearchResult,
+  type DatabaseSettings,
+};
 
 export interface BookLookupResult {
   found: boolean;
@@ -582,7 +594,7 @@ export async function searchBookByIsbn(
   const clean = cleanIsbn(rawIsbn);
   if (clean.length === 10 || clean.length === 13) {
     try {
-      const directRes = await searchBook(clean);
+      const directRes = await searchBookByISBN(clean, settings);
       if (directRes) {
         return {
           found: true,
@@ -600,7 +612,7 @@ export async function searchBookByIsbn(
         };
       }
     } catch (e) {
-      console.warn('[searchBookByIsbn] Errore chiamata searchBook:', e);
+      console.warn('[searchBookByIsbn] Errore chiamata searchBookByISBN:', e);
     }
   }
   return searchBookOnline(rawIsbn, settings);

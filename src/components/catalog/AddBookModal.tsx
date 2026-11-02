@@ -4,7 +4,7 @@ import { Book, GENRE_OPTIONS, AGE_GROUP_OPTIONS } from '../../types';
 import { BookCoverImage } from './BookCoverImage';
 import { generateBookCoverDataUrl } from '../../utils/coverGenerator';
 import { classifyBook, BookClassification } from '../../utils/bookClassifier';
-import { searchBook } from '../../services/bookService';
+import { searchBookByISBN, searchBook } from '../../services/bookService';
 import { ocrBookImage } from '../../services/onlineBookSearch';
 import {
   X,
@@ -117,8 +117,13 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     setLookupSource(null);
 
     try {
-      console.info(`[AddBookModal] Avvio ricerca REST per: "${rawQuery}"...`);
-      const data = await searchBook(rawQuery);
+      console.info(`[AddBookModal] Avvio ricerca multi-fonte su 8 banche dati per: "${rawQuery}"...`);
+      const data = await searchBookByISBN(rawQuery, {
+        isbndbApiKey: settings?.isbndbApiKey,
+        worldcatWskey: settings?.worldcatWskey,
+        librarythingDevKey: settings?.librarythingDevKey,
+        schoolName: settings?.schoolName,
+      });
 
       if (data) {
         setTitle(data.title || '');
