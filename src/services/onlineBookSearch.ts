@@ -11,6 +11,9 @@
  */
 
 import { Book } from '../types';
+import { searchBook, BookSearchResult } from './bookService';
+
+export { searchBook, type BookSearchResult };
 
 export interface BookLookupResult {
   found: boolean;
@@ -576,6 +579,30 @@ export async function searchBookByIsbn(
     schoolName?: string;
   }
 ): Promise<BookLookupResult> {
+  const clean = cleanIsbn(rawIsbn);
+  if (clean.length === 10 || clean.length === 13) {
+    try {
+      const directRes = await searchBook(clean);
+      if (directRes) {
+        return {
+          found: true,
+          source: directRes.source,
+          title: directRes.title,
+          authors: directRes.authors,
+          publisher: directRes.publisher,
+          publicationYear: directRes.publicationYear,
+          isbn: directRes.isbn,
+          description: directRes.description,
+          categories: directRes.categories,
+          pageCount: directRes.pageCount,
+          coverUrl: directRes.coverUrl,
+          coverCandidates: directRes.coverCandidates,
+        };
+      }
+    } catch (e) {
+      console.warn('[searchBookByIsbn] Errore chiamata searchBook:', e);
+    }
+  }
   return searchBookOnline(rawIsbn, settings);
 }
 
