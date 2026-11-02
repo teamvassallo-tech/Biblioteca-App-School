@@ -4,7 +4,8 @@ import { Book, GENRE_OPTIONS, AGE_GROUP_OPTIONS } from '../../types';
 import { BookCoverImage } from './BookCoverImage';
 import { generateBookCoverDataUrl } from '../../utils/coverGenerator';
 import { classifyBook, BookClassification } from '../../utils/bookClassifier';
-import { searchBookOnline, searchBookByIsbn, ocrBookImage } from '../../services/onlineBookSearch';
+import { searchBookOnline, searchBookByIsbn } from '../../services/bookService';
+import { ocrBookImage } from '../../services/onlineBookSearch';
 import {
   X,
   Barcode,

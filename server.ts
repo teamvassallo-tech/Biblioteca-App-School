@@ -554,9 +554,9 @@ app.get(['/api/isbn/:isbn', '/api/isbn', '/isbn/:isbn', '/isbn'], async (req: Re
 });
 
 // Official Bibliographic Search by query (ISBN, Title, or Author) without AI
-app.get('/api/book-search', async (req: Request, res: Response) => {
+app.get(['/api/book-search', '/api/search-book', '/book-search', '/search-book'], async (req: Request, res: Response) => {
   try {
-    const rawQuery = (req.query.query as string || req.query.q as string || '').trim();
+    const rawQuery = (req.query.q as string || req.query.query as string || req.query.isbn as string || req.query.title as string || '').trim();
     if (!rawQuery) {
       return res.status(400).json({ error: 'Termine di ricerca mancante' });
     }

@@ -2,6 +2,10 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/api/search-book",
+      "destination": "/api/search-book"
+    },
+    {
       "source": "/api/isbn/:isbn",
       "destination": "/api/isbn?isbn=:isbn"
     },

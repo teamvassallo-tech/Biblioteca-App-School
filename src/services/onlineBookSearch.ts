@@ -424,143 +424,21 @@ async function fetchFromOpenLibraryDirect(
  * If not found, strictly returns: "Nessun risultato trovato nelle banche dati ufficiali".
  * Zero AI calls.
  */
+import { searchBook } from './bookService';
+
 export async function searchBookOnline(
   rawQuery: string,
-  settings?: {
+  _settings?: {
     isbndbApiKey?: string;
     worldcatWskey?: string;
     librarythingDevKey?: string;
     schoolName?: string;
   }
 ): Promise<BookLookupResult> {
-  const query = (rawQuery || '').trim();
-  if (!query) {
-    throw new Error('Inserisci un codice ISBN, un titolo o un autore per effettuare la ricerca.');
-  }
-
-  const isIsbn = isIsbnLike(query);
-  const clean = isIsbn ? cleanIsbn(query) : query;
-
-  console.info(`[Ricerca Banche Dati Ufficiali] Avvio interrogazione per "${clean}" (modalità: ${isIsbn ? 'ISBN' : 'Titolo/Autore'})...`);
-
-  // TENTATIVO 1: Chiamata al server/Vercel serverless proxy (/api/isbn/:isbn o /api/book-search?query=...)
-  try {
-    const qParams = new URLSearchParams();
-    if (settings?.isbndbApiKey) qParams.set('isbndbKey', settings.isbndbApiKey);
-    if (settings?.worldcatWskey) qParams.set('worldcatKey', settings.worldcatWskey);
-    if (settings?.librarythingDevKey) qParams.set('librarythingKey', settings.librarythingDevKey);
-    const qStr = qParams.toString() ? `?${qParams.toString()}` : '';
-
-    const proxyUrl = isIsbn
-      ? `/api/isbn?isbn=${encodeURIComponent(clean)}${qStr ? `&${qStr.slice(1)}` : ''}`
-      : `/api/book-search?query=${encodeURIComponent(clean)}${qStr ? `&${qStr.slice(1)}` : ''}`;
-
-    console.info(`[Ricerca Banche Dati Ufficiali] Interrogazione proxy: ${proxyUrl}...`);
-    const res = await fetch(proxyUrl);
-    const contentType = res.headers.get('content-type') || '';
-
-    if (res.ok && contentType.includes('application/json')) {
-      const data = await res.json();
-      if (data && data.found) {
-        console.info('[Ricerca Banche Dati Ufficiali] Trovato con successo dal proxy server:', data.title, `(${data.source})`);
-
-        const resolvedIsbn = data.isbn || (isIsbn ? clean : undefined);
-        const candidates = (data.coverCandidates && Array.isArray(data.coverCandidates) && data.coverCandidates.length > 0)
-          ? data.coverCandidates
-          : (resolvedIsbn ? getRealCoverCandidates(resolvedIsbn, data.coverUrl) : []);
-
-        return {
-          found: true,
-          isbn: resolvedIsbn,
-          source: data.source || 'OPAC SBN / BNI (Catalogo Bibliotecario Nazionale)',
-          title: data.title,
-          authors: data.authors || [],
-          publisher: data.publisher,
-          publicationYear: data.publicationYear,
-          description: data.description,
-          categories: data.categories,
-          pageCount: data.pageCount,
-          coverUrl: data.coverUrl || candidates[0]?.url,
-          coverCandidates: candidates,
-          genre: data.genre,
-          ageGroup: data.ageGroup,
-        };
-      }
-    } else {
-      console.warn(`[Ricerca Banche Dati] Proxy status ${res.status}. Procedo con interrogazione diretta client alle banche dati REST.`);
-    }
-  } catch (proxyError: any) {
-    console.warn('[Ricerca Banche Dati] Errore proxy server, procedo con chiamata diretta:', proxyError?.message || proxyError);
-  }
-
-  // TENTATIVO 2: Ricerca diretta sulle Banche Dati Ufficiali (OPAC SBN / BNI, Google Books, Open Library)
-  console.info(`[Ricerca Banche Dati Ufficiali] Interrogazione diretta client alle banche dati per "${clean}"...`);
-  try {
-    const [opacRes, gbRes, olRes] = await Promise.allSettled([
-      fetchFromOpacSbnDirect(clean, isIsbn),
-      fetchFromGoogleBooksDirect(clean, isIsbn),
-      fetchFromOpenLibraryDirect(clean, isIsbn),
-    ]);
-
-    const opacData = opacRes.status === 'fulfilled' ? opacRes.value : null;
-    const gbData = gbRes.status === 'fulfilled' ? gbRes.value : null;
-    const olData = olRes.status === 'fulfilled' ? olRes.value : null;
-
-    // Priorità al catalogo nazionale italiano OPAC SBN / BNI, poi Google Books, poi Open Library
-    const title = opacData?.title || gbData?.title || olData?.title;
-    const authors =
-      opacData?.authors && opacData.authors.length > 0
-        ? opacData.authors
-        : gbData?.authors && gbData.authors.length > 0
-        ? gbData.authors
-        : olData?.authors && olData.authors.length > 0
-        ? olData.authors
-        : [];
-    const publisher = opacData?.publisher || gbData?.publisher || olData?.publisher;
-    const publicationYear = opacData?.publicationYear || gbData?.publicationYear || olData?.publicationYear;
-    const description = gbData?.description || olData?.description;
-    const categories = gbData?.categories || olData?.categories || [];
-    const pageCount = gbData?.pageCount || olData?.pageCount;
-    const foundIsbn = opacData?.isbn || gbData?.isbn || olData?.isbn || (isIsbn ? clean : undefined);
-    const coverUrl = gbData?.coverUrl || olData?.coverUrl || opacData?.coverUrl;
-
-    if (title || authors.length > 0) {
-      const source = opacData?.title
-        ? 'OPAC SBN / BNI (Catalogo Bibliotecario Nazionale)'
-        : gbData?.title
-        ? 'Google Books (Banca Dati Bibliotecaria)'
-        : 'Open Library (Banca Dati Bibliotecaria)';
-
-      const coverCandidates = foundIsbn ? getRealCoverCandidates(foundIsbn, coverUrl) : [];
-      const resolvedCover = coverUrl || coverCandidates[0]?.url;
-
-      console.info(`[Ricerca Banche Dati Ufficiali] Trovato: "${title}" (${source})`);
-      return {
-        found: true,
-        isbn: foundIsbn,
-        source,
-        title,
-        authors,
-        publisher,
-        publicationYear,
-        description,
-        categories,
-        pageCount,
-        coverUrl: resolvedCover,
-        coverCandidates,
-      };
-    }
-  } catch (dbError: any) {
-    console.error('[Ricerca Banche Dati Ufficiali] Errore:', dbError);
-  }
-
-  // TENTATIVO 3: Nessun risultato nelle banche dati ufficiali -> Ritorna messaggio esatto SENZA AI
-  console.info(`[Ricerca Banche Dati Ufficiali] Nessun risultato per "${clean}".`);
+  const result = await searchBook(rawQuery);
   return {
-    found: false,
-    isbn: isIsbn ? clean : undefined,
-    source: 'Nessuna banca dati ufficiale',
-    message: 'Nessun risultato trovato nelle banche dati ufficiali',
+    ...result,
+    source: result.source || 'Banche Dati Ufficiali (OPAC SBN / BNI / Crossref / Google Books)',
   };
 }
 

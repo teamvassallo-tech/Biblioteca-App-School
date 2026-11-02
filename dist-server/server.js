@@ -681,9 +681,9 @@ app.get(["/api/isbn/:isbn", "/api/isbn", "/isbn/:isbn", "/isbn"], async (req, re
     return res.status(500).json({ error: error?.message || "Errore durante la ricerca ISBN" });
   }
 });
-app.get("/api/book-search", async (req, res) => {
+app.get(["/api/book-search", "/api/search-book", "/book-search", "/search-book"], async (req, res) => {
   try {
-    const rawQuery = (req.query.query || req.query.q || "").trim();
+    const rawQuery = (req.query.q || req.query.query || req.query.isbn || req.query.title || "").trim();
     if (!rawQuery) {
       return res.status(400).json({ error: "Termine di ricerca mancante" });
     }
