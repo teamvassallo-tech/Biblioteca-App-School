@@ -157,94 +157,11 @@ export default async function handler(req: any, res: any) {
             const raw = info.imageLinks.extraLarge || info.imageLinks.large || info.imageLinks.medium || info.imageLinks.thumbnail;
             if (raw) coverUrl = raw.replace(/^http:\/\//i, 'https://').replace(/&edge=curl/gi, '');
           }
+          if (!foundSource) foundSource = 'Google Books (Banca Dati Bibliotecaria)';
         }
       }
     } catch (e) {
       console.warn('Google Books error in serverless:', e);
-    }
-
-    // 4. Crossref Accademico
-    if (!title || authors.length === 0) {
-      try {
-        const crUrl = `https://api.crossref.org/works?filter=isbn:${encodeURIComponent(clean)}&rows=1`;
-        const crResp = await fetch(crUrl, {
-          headers: { 'User-Agent': 'BiblioScuola/1.0 (mailto:scuola@biblioscuola.it)' },
-        });
-        if (crResp.ok) {
-          const crData = await crResp.json();
-          const item = crData?.message?.items?.[0];
-          if (item) {
-            if (!title && Array.isArray(item.title) && item.title.length > 0) title = item.title[0];
-            if (authors.length === 0 && Array.isArray(item.author)) {
-              authors = item.author.map((a: any) => a.given && a.family ? `${a.given} ${a.family}` : a.name || a.family || '');
-            }
-            if (!publisher && item.publisher) publisher = item.publisher;
-            const dateParts = item.created?.['date-parts']?.[0] || item['published-print']?.['date-parts']?.[0];
-            if (!publicationYear && dateParts && dateParts[0]) publicationYear = String(dateParts[0]);
-            if (categories.length === 0 && Array.isArray(item.subject)) categories = item.subject.slice(0, 4);
-            if (!foundSource) foundSource = 'Crossref Accademico';
-          }
-        }
-      } catch (e) {
-        console.warn('Crossref error in serverless:', e);
-      }
-    }
-
-    // 5. ISBNdb (se presente la chiave)
-    const isbndbKey = (req.query?.isbndbKey as string) || process.env.ISBNDB_API_KEY;
-    if (isbndbKey && (!title || authors.length === 0 || !coverUrl)) {
-      try {
-        const isbndbResp = await fetch(`https://api2.isbndb.com/book/${encodeURIComponent(clean)}`, {
-          headers: { Authorization: isbndbKey.trim() },
-        });
-        if (isbndbResp.ok) {
-          const isbndbData = await isbndbResp.json();
-          const b = isbndbData?.book;
-          if (b) {
-            if (!title && b.title) title = b.title;
-            if (authors.length === 0 && Array.isArray(b.authors)) authors = b.authors;
-            if (!publisher && b.publisher) publisher = b.publisher;
-            if (!publicationYear && b.date_published) publicationYear = String(b.date_published).slice(0, 4);
-            if (!description && b.synopsis) description = b.synopsis;
-            if (!coverUrl && b.image) coverUrl = b.image;
-            if (categories.length === 0 && Array.isArray(b.subjects)) categories = b.subjects.slice(0, 4);
-            if (!foundSource) foundSource = 'ISBNdb Global Database';
-          }
-        }
-      } catch (e) {
-        console.warn('ISBNdb error in serverless:', e);
-      }
-    }
-
-    // 6. WorldCat / OCLC
-    const worldcatKey = (req.query?.worldcatKey as string) || process.env.WORLDCAT_API_KEY || process.env.OCLC_WSKEY;
-    if (worldcatKey && (!title || authors.length === 0)) {
-      try {
-        const wcResp = await fetch(`https://americas.discovery.api.oclc.org/worldcat/search/v2/bibs?q=bn:${encodeURIComponent(clean)}&limit=1`, {
-          headers: { Authorization: `Bearer ${worldcatKey}`, Accept: 'application/json' },
-        });
-        if (wcResp.ok) {
-          const wcData = await wcResp.json();
-          const rec = wcData?.bibRecords?.[0];
-          if (rec) {
-            if (!title && rec.title) title = rec.title;
-            if (authors.length === 0 && Array.isArray(rec.creator)) {
-              authors = rec.creator.map((c: any) => c.name || c);
-            }
-            if (!publisher && rec.publisher) publisher = rec.publisher;
-            if (!publicationYear && rec.date) publicationYear = String(rec.date).slice(0, 4);
-            if (!foundSource) foundSource = 'WorldCat / OCLC';
-          }
-        }
-      } catch (e) {
-        console.warn('WorldCat error in serverless:', e);
-      }
-    }
-
-    // 7. LibraryThing Cover & Editions
-    const ltKey = (req.query?.librarythingKey as string) || 'fd11eebee79ccfcfe2f17d34a92e1011';
-    if (!coverUrl) {
-      coverUrl = `https://covers.librarything.com/devkey/${ltKey}/large/isbn/${encodeURIComponent(clean)}`;
     }
 
     // Authentic Cover Candidates from Publisher CDNs

@@ -4,8 +4,7 @@ import { Book, GENRE_OPTIONS, AGE_GROUP_OPTIONS } from '../../types';
 import { BookCoverImage } from './BookCoverImage';
 import { generateBookCoverDataUrl } from '../../utils/coverGenerator';
 import { classifyBook, BookClassification } from '../../utils/bookClassifier';
-import { searchBookByISBN, searchBook } from '../../services/bookService';
-import { ocrBookImage } from '../../services/onlineBookSearch';
+import { searchBookOnline, searchBookByIsbn, ocrBookImage } from '../../services/onlineBookSearch';
 import {
   X,
   Barcode,
@@ -104,11 +103,11 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
 
   if (!isOpen) return null;
 
-  // 1. Perform Online Lookup exclusively on official REST APIs (Google Books -> Open Library fallback)
+  // 1. Perform Online Lookup on Official Bibliographic Databases (OPAC SBN, BNI, LibraryThing, Google Books, Open Library)
   const handleIsbnLookup = async (codeToSearch?: string) => {
     const rawQuery = (codeToSearch || isbnInput).trim();
     if (!rawQuery) {
-      setOnlineLookupError('Inserisci o scansiona un codice ISBN');
+      setOnlineLookupError('Inserisci o scansiona un codice ISBN, oppure digita un titolo o autore');
       return;
     }
 
@@ -117,21 +116,25 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     setLookupSource(null);
 
     try {
-      console.info(`[AddBookModal] Avvio ricerca multi-fonte su 8 banche dati per: "${rawQuery}"...`);
-      const data = await searchBookByISBN(rawQuery, {
+      console.info(`[AddBookModal] Avvio ricerca banche dati per: "${rawQuery}"...`);
+      const data = await searchBookOnline(rawQuery, {
         isbndbApiKey: settings?.isbndbApiKey,
         worldcatWskey: settings?.worldcatWskey,
         librarythingDevKey: settings?.librarythingDevKey,
         schoolName: settings?.schoolName,
       });
 
-      if (data) {
+      if (data.found) {
         setTitle(data.title || '');
         const authStr = Array.isArray(data.authors) ? data.authors.join(', ') : '';
         setAuthors(authStr);
         setPublisher(data.publisher || '');
         setPublicationYear(data.publicationYear || '');
-        setIsbn(data.isbn || rawQuery.replace(/[^0-9X]/gi, ''));
+        if (data.isbn) {
+          setIsbn(data.isbn);
+        } else if (/^(\d{9}[\dX]|\d{13})$/i.test(rawQuery.replace(/[^0-9X]/gi, ''))) {
+          setIsbn(rawQuery.replace(/[^0-9X]/gi, ''));
+        }
         if (data.description) setSynopsis(data.description);
 
         // Accurate classification (school genre and recommended age)
@@ -142,8 +145,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
           data.categories || [],
           ''
         );
-        const resolvedGenre = classification.genre;
-        const resolvedAge = classification.ageGroup;
+        const resolvedGenre = data.genre || classification.genre;
+        const resolvedAge = data.ageGroup || classification.ageGroup;
         setGenre(resolvedGenre);
         setAgeGroup(resolvedAge);
         setDetectedClassification({ ...classification, genre: resolvedGenre, ageGroup: resolvedAge });
@@ -167,20 +170,25 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
           setCoverUrl(guaranteed);
         }
 
-        setLookupSource(data.source);
-        triggerScanFeedback('success', `Trovato su ${data.source}: "${data.title}" con copertina!`);
+        setLookupSource(data.source || 'Banche Dati Bibliotecarie Ufficiali');
+        const srcName = data.source || 'Banche dati ufficiali';
+        triggerScanFeedback('success', `Trovato su ${srcName}: "${data.title}" con copertina!`);
       } else {
-        // Not found in official REST APIs (Google Books / Open Library): return exact error without AI
-        setOnlineLookupError('Nessun risultato trovato nelle banche dati ufficiali');
+        // Not found in official databases: exact message requested
+        setOnlineLookupError(data.message || 'Nessun risultato trovato nelle banche dati ufficiali');
         triggerScanFeedback('error', 'Nessun risultato trovato nelle banche dati ufficiali.');
       }
     } catch (err: any) {
-      console.error('[AddBookModal] ERRORE RICERCA REST:', {
+      console.error('[AddBookModal] ERRORE DETTAGLIATO RICERCA ONLINE:', {
         query: rawQuery,
         errorMessage: err?.message || String(err),
+        stack: err?.stack,
+        error: err,
       });
-      setOnlineLookupError('Nessun risultato trovato nelle banche dati ufficiali');
-      triggerScanFeedback('error', 'Nessun risultato trovato nelle banche dati ufficiali.');
+      setOnlineLookupError(
+        `Errore durante la ricerca: ${err?.message || 'verifica la connessione internet'}. Consulta la console per i dettagli completi.`
+      );
+      triggerScanFeedback('error', 'Errore durante la ricerca online.');
     } finally {
       setIsSearchingOnline(false);
     }
