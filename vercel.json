@@ -6,6 +6,14 @@
       "destination": "/api/search-book"
     },
     {
+      "source": "/api/book-search",
+      "destination": "/api/book-search"
+    },
+    {
+      "source": "/api/cover-lookup",
+      "destination": "/api/cover-lookup"
+    },
+    {
       "source": "/api/isbn/:isbn",
       "destination": "/api/isbn?isbn=:isbn"
     },
