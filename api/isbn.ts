@@ -14,25 +14,83 @@ function isbn13ToIsbn10(isbn13: string): string | null {
   return core + check;
 }
 
+function isbn10ToIsbn13(isbn10: string): string | null {
+  if (isbn10.length !== 10) return null;
+  const core = '978' + isbn10.slice(0, 9);
+  let sum = 0;
+  for (let i = 0; i < 12; i++) {
+    sum += parseInt(core[i], 10) * (i % 2 === 0 ? 1 : 3);
+  }
+  const rem = sum % 10;
+  const check = rem === 0 ? '0' : (10 - rem).toString();
+  return core + check;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  timeoutMs = 4500,
+  headers: Record<string, string> = {}
+): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'BiblioScuola/1.0 (Gestionale Biblioteca Scolastica; scuola italiana)',
+        ...headers,
+      },
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractIsbnFromRequest(req: any): string {
+  const qIsbn = req.query?.isbn;
+  if (typeof qIsbn === 'string' && qIsbn.trim()) {
+    return qIsbn.trim();
+  }
+  if (Array.isArray(qIsbn) && qIsbn[0]) {
+    return String(qIsbn[0]).trim();
+  }
+
+  // Extract from path e.g. /api/isbn/9788809950900 or /api/isbn/9788809950900?foo=bar
+  const rawUrl = (req.url || '') as string;
+  const pathname = rawUrl.split('?')[0];
+  const match = pathname.match(/\/api\/isbn\/([^/]+)$/i);
+  if (match && match[1]) {
+    return decodeURIComponent(match[1]).trim();
+  }
+
+  return '';
+}
+
 export default async function handler(req: any, res: any) {
-  // Enable CORS for frontend
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(200).json({ ok: true });
   }
 
   try {
-    const rawIsbn = (req.query?.isbn as string) || '';
+    const rawIsbn = extractIsbnFromRequest(req);
     const clean = cleanIsbn(rawIsbn);
 
     if (!clean || (clean.length !== 10 && clean.length !== 13)) {
-      return res.status(400).json({ error: 'Codice ISBN non valido (deve contenere 10 o 13 cifre)' });
+      return res.status(400).json({
+        found: false,
+        error: 'Codice ISBN non valido (deve contenere 10 o 13 cifre)',
+      });
     }
 
     const isbn10 = clean.length === 10 ? clean : isbn13ToIsbn10(clean);
+    const isbn13 = clean.length === 13 ? clean : isbn10ToIsbn13(clean);
 
     let title = '';
     let authors: string[] = [];
@@ -45,11 +103,12 @@ export default async function handler(req: any, res: any) {
 
     // 1. OPAC SBN & BNI (Catalogo Collettivo Nazionale ICCU / Deposito Legale BNCF)
     try {
-      const sbnResp = await fetch(
-        `https://opac.sbn.it/opacmobilegw/search.json?isbn=${encodeURIComponent(clean)}`,
-        { headers: { 'User-Agent': 'BiblioScuola/1.0 (Scuola Italiana)' } }
+      const sbnQuery = isbn13 || clean;
+      const sbnResp = await fetchWithTimeout(
+        `https://opac.sbn.it/opacmobilegw/search.json?isbn=${encodeURIComponent(sbnQuery)}`,
+        4500
       );
-      if (sbnResp.ok) {
+      if (sbnResp && sbnResp.ok) {
         const sbnData = await sbnResp.json();
         const records = sbnData.briefRecords || [];
         if (records.length > 0) {
@@ -97,8 +156,8 @@ export default async function handler(req: any, res: any) {
     // 2. Open Library Direct Edition & Search
     try {
       const olUrl = `https://openlibrary.org/isbn/${encodeURIComponent(clean)}.json`;
-      const olResp = await fetch(olUrl);
-      if (olResp.ok) {
+      const olResp = await fetchWithTimeout(olUrl, 3500);
+      if (olResp && olResp.ok) {
         const olData = await olResp.json();
         if (!title && olData.title) title = olData.title;
         if (!publisher && Array.isArray(olData.publishers) && olData.publishers.length > 0) {
@@ -116,8 +175,8 @@ export default async function handler(req: any, res: any) {
 
       if (!title || authors.length === 0 || !coverUrl) {
         const sUrl = `https://openlibrary.org/search.json?isbn=${encodeURIComponent(clean)}&fields=title,author_name,publisher,first_publish_year,cover_i,subject&limit=1`;
-        const sResp = await fetch(sUrl);
-        if (sResp.ok) {
+        const sResp = await fetchWithTimeout(sUrl, 3500);
+        if (sResp && sResp.ok) {
           const sData = await sResp.json();
           const doc = sData?.docs?.[0];
           if (doc) {
@@ -138,8 +197,8 @@ export default async function handler(req: any, res: any) {
     // 3. Google Books REST API
     try {
       const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(clean)}&maxResults=1`;
-      const gbResp = await fetch(gbUrl);
-      if (gbResp.ok) {
+      const gbResp = await fetchWithTimeout(gbUrl, 3500);
+      if (gbResp && gbResp.ok) {
         const gbData = await gbResp.json();
         const item = gbData?.items?.[0];
         if (item && item.volumeInfo) {
@@ -157,6 +216,7 @@ export default async function handler(req: any, res: any) {
             const raw = info.imageLinks.extraLarge || info.imageLinks.large || info.imageLinks.medium || info.imageLinks.thumbnail;
             if (raw) coverUrl = raw.replace(/^http:\/\//i, 'https://').replace(/&edge=curl/gi, '');
           }
+          if (!foundSource) foundSource = 'Google Books (Banca Dati Bibliotecaria)';
         }
       }
     } catch (e) {
@@ -167,16 +227,16 @@ export default async function handler(req: any, res: any) {
     if (!title || authors.length === 0) {
       try {
         const crUrl = `https://api.crossref.org/works?filter=isbn:${encodeURIComponent(clean)}&rows=1`;
-        const crResp = await fetch(crUrl, {
-          headers: { 'User-Agent': 'BiblioScuola/1.0 (mailto:scuola@biblioscuola.it)' },
+        const crResp = await fetchWithTimeout(crUrl, 3000, {
+          'User-Agent': 'BiblioScuola/1.0 (mailto:scuola@biblioscuola.it)',
         });
-        if (crResp.ok) {
+        if (crResp && crResp.ok) {
           const crData = await crResp.json();
           const item = crData?.message?.items?.[0];
           if (item) {
             if (!title && Array.isArray(item.title) && item.title.length > 0) title = item.title[0];
             if (authors.length === 0 && Array.isArray(item.author)) {
-              authors = item.author.map((a: any) => a.given && a.family ? `${a.given} ${a.family}` : a.name || a.family || '');
+              authors = item.author.map((a: any) => (a.given && a.family ? `${a.given} ${a.family}` : a.name || a.family || ''));
             }
             if (!publisher && item.publisher) publisher = item.publisher;
             const dateParts = item.created?.['date-parts']?.[0] || item['published-print']?.['date-parts']?.[0];
@@ -190,64 +250,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // 5. ISBNdb (se presente la chiave)
-    const isbndbKey = (req.query?.isbndbKey as string) || process.env.ISBNDB_API_KEY;
-    if (isbndbKey && (!title || authors.length === 0 || !coverUrl)) {
-      try {
-        const isbndbResp = await fetch(`https://api2.isbndb.com/book/${encodeURIComponent(clean)}`, {
-          headers: { Authorization: isbndbKey.trim() },
-        });
-        if (isbndbResp.ok) {
-          const isbndbData = await isbndbResp.json();
-          const b = isbndbData?.book;
-          if (b) {
-            if (!title && b.title) title = b.title;
-            if (authors.length === 0 && Array.isArray(b.authors)) authors = b.authors;
-            if (!publisher && b.publisher) publisher = b.publisher;
-            if (!publicationYear && b.date_published) publicationYear = String(b.date_published).slice(0, 4);
-            if (!description && b.synopsis) description = b.synopsis;
-            if (!coverUrl && b.image) coverUrl = b.image;
-            if (categories.length === 0 && Array.isArray(b.subjects)) categories = b.subjects.slice(0, 4);
-            if (!foundSource) foundSource = 'ISBNdb Global Database';
-          }
-        }
-      } catch (e) {
-        console.warn('ISBNdb error in serverless:', e);
-      }
-    }
-
-    // 6. WorldCat / OCLC
-    const worldcatKey = (req.query?.worldcatKey as string) || process.env.WORLDCAT_API_KEY || process.env.OCLC_WSKEY;
-    if (worldcatKey && (!title || authors.length === 0)) {
-      try {
-        const wcResp = await fetch(`https://americas.discovery.api.oclc.org/worldcat/search/v2/bibs?q=bn:${encodeURIComponent(clean)}&limit=1`, {
-          headers: { Authorization: `Bearer ${worldcatKey}`, Accept: 'application/json' },
-        });
-        if (wcResp.ok) {
-          const wcData = await wcResp.json();
-          const rec = wcData?.bibRecords?.[0];
-          if (rec) {
-            if (!title && rec.title) title = rec.title;
-            if (authors.length === 0 && Array.isArray(rec.creator)) {
-              authors = rec.creator.map((c: any) => c.name || c);
-            }
-            if (!publisher && rec.publisher) publisher = rec.publisher;
-            if (!publicationYear && rec.date) publicationYear = String(rec.date).slice(0, 4);
-            if (!foundSource) foundSource = 'WorldCat / OCLC';
-          }
-        }
-      } catch (e) {
-        console.warn('WorldCat error in serverless:', e);
-      }
-    }
-
-    // 7. LibraryThing Cover & Editions
-    const ltKey = (req.query?.librarythingKey as string) || 'fd11eebee79ccfcfe2f17d34a92e1011';
-    if (!coverUrl) {
-      coverUrl = `https://covers.librarything.com/devkey/${ltKey}/large/isbn/${encodeURIComponent(clean)}`;
-    }
-
-    // Authentic Cover Candidates from Publisher CDNs
+    // Authentic Cover Candidates from Publisher CDNs (excluding Cloudflare-blocked URLs)
     const coverCandidates: Array<{ source: string; url: string }> = [];
     if (coverUrl) {
       coverCandidates.push({ source: 'Copertina Originale (Banca Dati)', url: coverUrl });
@@ -296,6 +299,9 @@ export default async function handler(req: any, res: any) {
     });
   } catch (err: any) {
     console.error('api/isbn error:', err);
-    return res.status(500).json({ error: err?.message || 'Errore ricerca ISBN' });
+    return res.status(500).json({
+      found: false,
+      error: err?.message || 'Errore ricerca ISBN',
+    });
   }
 }

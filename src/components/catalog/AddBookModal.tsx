@@ -5,7 +5,6 @@ import { BookCoverImage } from './BookCoverImage';
 import { generateBookCoverDataUrl } from '../../utils/coverGenerator';
 import { classifyBook, BookClassification } from '../../utils/bookClassifier';
 import { searchBookOnline, searchBookByIsbn } from '../../services/bookService';
-import { ocrBookImage } from '../../services/onlineBookSearch';
 import {
   X,
   Barcode,
@@ -33,18 +32,14 @@ interface AddBookModalProps {
 export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onBookAdded }) => {
   const { books, addBook, triggerScanFeedback, settings } = useLibrary();
 
-  // Mode: 'isbn' (Open Library / Google Books) | 'ai_ocr' (Frontespizio image) | 'manual'
-  const [activeTab, setActiveTab] = useState<'isbn' | 'ai_ocr' | 'manual'>('isbn');
+  // Mode: 'isbn' (Official Bibliographic Databases) | 'manual'
+  const [activeTab, setActiveTab] = useState<'isbn' | 'manual'>('isbn');
 
   // Scanner / Search Input
   const [isbnInput, setIsbnInput] = useState('');
   const [isSearchingOnline, setIsSearchingOnline] = useState(false);
   const [onlineLookupError, setOnlineLookupError] = useState<string | null>(null);
   const [lookupSource, setLookupSource] = useState<string | null>(null);
-
-  // Gemini OCR Image state
-  const [ocrImageFile, setOcrImageFile] = useState<string | null>(null);
-  const [isOcrProcessing, setIsOcrProcessing] = useState(false);
 
   // Form Fields
   const [title, setTitle] = useState('');
@@ -59,13 +54,11 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
   const [synopsis, setSynopsis] = useState('');
   const [coverUrl, setCoverUrl] = useState('');
   const [copiesTotal, setCopiesTotal] = useState<number>(1);
-  const [isGeneratingAiCover, setIsGeneratingAiCover] = useState(false);
   const [coverCandidates, setCoverCandidates] = useState<Array<{ source: string; url: string }>>([]);
   const [isSearchingOriginalCovers, setIsSearchingOriginalCovers] = useState(false);
   const [detectedClassification, setDetectedClassification] = useState<BookClassification | null>(null);
 
   const isbnInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const coverImageInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-generate next inventory code and reset fields when modal opens
@@ -89,7 +82,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
       setCoverUrl('');
       setCoverCandidates([]);
       setCopiesTotal(1);
-      setOcrImageFile(null);
       setActiveTab('isbn');
       // Auto-focus the ISBN input for instant USB scanner scan
       setTimeout(() => isbnInputRef.current?.focus(), 100);
@@ -195,67 +187,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     }
   };
 
-  // 2. Gemini Frontespizio OCR Fallback
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const base64 = reader.result as string;
-      setOcrImageFile(base64);
-      setCoverUrl(base64); // optionally set cover directly from uploaded photo!
-      await analyzeImageWithGemini(base64, file.type);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const analyzeImageWithGemini = async (base64: string, mimeType: string) => {
-    setIsOcrProcessing(true);
-    setOnlineLookupError(null);
-
-    try {
-      const res = await ocrBookImage(base64, mimeType);
-
-      if (res.success && res.data) {
-        const d = res.data;
-        if (d.title) setTitle(d.title);
-        if (d.authors) setAuthors(Array.isArray(d.authors) ? d.authors.join(', ') : d.authors);
-        if (d.publisher) setPublisher(d.publisher);
-        if (d.publicationYear) setPublicationYear(d.publicationYear);
-        if (d.isbn) setIsbn(d.isbn);
-        if (d.description) setSynopsis(d.description);
-
-        const classification = classifyBook(
-          d.title || '',
-          d.authors || '',
-          d.description || '',
-          d.categories || [],
-          ''
-        );
-        const resolvedGenre = d.genre && d.genre !== 'Narrativa' ? d.genre : classification.genre;
-        const resolvedAge = d.ageGroup ? d.ageGroup : classification.ageGroup;
-        setGenre(resolvedGenre);
-        setAgeGroup(resolvedAge);
-        setDetectedClassification({ ...classification, genre: resolvedGenre, ageGroup: resolvedAge });
-
-        triggerScanFeedback('success', `Analisi AI completata! Estratto: "${d.title}" (${resolvedGenre})`);
-      } else {
-        setOnlineLookupError(res.error || 'L\'AI non è riuscita a estrarre dati sufficienti dall\'immagine.');
-      }
-    } catch (e: any) {
-      console.error('[AddBookModal] ERRORE DETTAGLIATO OCR FRONTESPIZIO:', {
-        errorMessage: e?.message || String(e),
-        stack: e?.stack,
-        error: e,
-      });
-      setOnlineLookupError('Errore durante l\'analisi con Gemini Vision OCR. Dettagli in console.');
-      triggerScanFeedback('error', 'Errore elaborazione OCR immagine');
-    } finally {
-      setIsOcrProcessing(false);
-    }
-  };
-
   // Helper to manually run intelligent classification on currently entered title/author/synopsis
   const handleAutoDetectGenreAndAge = () => {
     if (!title.trim() && !authors.trim()) {
@@ -267,60 +198,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     setAgeGroup(classification.ageGroup);
     setDetectedClassification(classification);
     triggerScanFeedback('success', `Rilevato: Genere "${classification.genre}" • Fascia Età "${classification.ageGroup}"`);
-  };
-
-  // 3. AI Book Cover Generator with Gemini + SVG fallback
-  const handleGenerateAiCover = async () => {
-    const currentTitle = title.trim();
-    if (!currentTitle && !isbn.trim() && !isbnInput.trim()) {
-      triggerScanFeedback('error', 'Inserisci o cerca prima il titolo del libro per generare la copertina!');
-      return;
-    }
-
-    setIsGeneratingAiCover(true);
-    triggerScanFeedback('info', 'Generazione copertina artistica in corso...');
-
-    try {
-      const res = await fetch('/api/gemini/generate-cover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: currentTitle || 'Nuovo Libro',
-          authors: authors || 'Autore',
-          genre,
-          synopsis,
-          isbn: isbn || isbnInput,
-          schoolName: settings?.schoolName,
-        }),
-      });
-
-      const data = await res.json();
-      if (data.success && data.coverUrl) {
-        setCoverUrl(data.coverUrl);
-        triggerScanFeedback('success', 'Nuova copertina generata con successo!');
-      } else {
-        const fallback = generateBookCoverDataUrl(
-          currentTitle || 'Nuovo Libro',
-          authors || 'Autore',
-          genre,
-          settings?.schoolName
-        );
-        setCoverUrl(fallback);
-        triggerScanFeedback('success', 'Copertina grafica scolastica impostata!');
-      }
-    } catch (err) {
-      console.error('Error generating AI cover:', err);
-      const fallback = generateBookCoverDataUrl(
-        currentTitle || 'Nuovo Libro',
-        authors || 'Autore',
-        genre,
-        settings?.schoolName
-      );
-      setCoverUrl(fallback);
-      triggerScanFeedback('success', 'Copertina grafica generata (modalità fallback)!');
-    } finally {
-      setIsGeneratingAiCover(false);
-    }
   };
 
   // 4. Dedicated Original Cover Finder (Amazon IT CDN, Google Books Content, Open Library)
@@ -427,18 +304,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('ai_ocr')}
-            className={`pb-2.5 px-3 text-xs sm:text-sm font-bold border-b-2 flex items-center gap-2 transition ${
-              activeTab === 'ai_ocr'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 text-amber-500" />
-            <span>2. Vision OCR Frontespizio</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab('manual')}
             className={`pb-2.5 px-3 text-xs sm:text-sm font-bold border-b-2 flex items-center gap-2 transition ${
               activeTab === 'manual'
@@ -446,7 +311,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <span>3. Inserimento Manuale</span>
+            <span>2. Inserimento Manuale</span>
           </button>
         </div>
 
@@ -561,55 +426,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
             </div>
           )}
 
-          {/* Method 2: Gemini OCR Frontespizio */}
-          {activeTab === 'ai_ocr' && (
-            <div className="mb-6 p-4 rounded-xl bg-purple-50/60 border border-purple-200">
-              <div className="flex items-center gap-2 mb-2 text-purple-950 font-bold text-xs uppercase tracking-wider">
-                <Sparkles className="w-4 h-4 text-purple-600" />
-                <span>Riconoscimento intelligente Frontespizio / Copertina con Gemini</span>
-              </div>
-              <p className="text-xs text-purple-800 mb-3">
-                Scatta o carica una foto del frontespizio (o della copertina con titolo e autore).
-                L&apos;AI analizzerà visivamente l&apos;immagine estraendo titolo, autore, editore, anno e
-                genere scolastico.
-              </p>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isOcrProcessing}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition"
-                >
-                  {isOcrProcessing ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Analisi Gemini in corso...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Camera className="w-4 h-4" />
-                      <span>Carica / Scatta Foto Frontespizio</span>
-                    </>
-                  )}
-                </button>
-
-                {ocrImageFile && (
-                  <span className="text-xs text-emerald-700 font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="w-4 h-4" /> Immagine caricata ed elaborata
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Form: Book Details */}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex flex-col sm:flex-row gap-5">
@@ -691,26 +507,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
                       <>
                         <RefreshCw className="w-3 h-3" />
                         <span>Cerca Copertina Originale</span>
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleGenerateAiCover}
-                    disabled={isGeneratingAiCover}
-                    className="w-full px-2 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 shadow-sm transition disabled:opacity-50 active:scale-95"
-                    title="Genera copertina artistica personalizzata per la trama del libro"
-                  >
-                    {isGeneratingAiCover ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Generazione AI in corso...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
-                        <span>Genera Copertina AI</span>
                       </>
                     )}
                   </button>

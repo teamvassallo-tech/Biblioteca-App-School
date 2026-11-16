@@ -18,8 +18,20 @@
       "destination": "/api/isbn?isbn=:isbn"
     },
     {
-      "source": "/api/(.*)",
+      "source": "/api/isbn",
+      "destination": "/api/isbn"
+    },
+    {
+      "source": "/api/gemini/(.*)",
       "destination": "/api"
+    },
+    {
+      "source": "/api/download-card-png",
+      "destination": "/api"
+    },
+    {
+      "source": "/((?!api/|assets/).*)",
+      "destination": "/index.html"
     }
   ]
 }
