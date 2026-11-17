@@ -14,9 +14,10 @@ import { getContentWidthClass, getDensityPaddingClass } from './utils/layoutPres
 import { AuthScreen } from './components/auth/AuthScreen';
 import { SchoolSwitcherModal } from './components/auth/SchoolSwitcherModal';
 import { Book } from './types';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 function MainAppContent() {
-  const { settings, currentUser, currentSchool } = useLibrary();
+  const { settings, currentUser, currentSchool, booksError, booksLoading, refreshBooks } = useLibrary();
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
 
   const [isSchoolSwitcherOpen, setIsSchoolSwitcherOpen] = useState(false);
@@ -79,6 +80,30 @@ function MainAppContent() {
 
       {/* Content Area Column */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Global Supabase Database Connection Alert */}
+        {booksError && (
+          <div className="bg-rose-50 border-b border-rose-200 px-4 py-3">
+            <div className={`${widthClass} mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>
+              <div className="flex items-start sm:items-center gap-2.5 text-rose-900 text-xs sm:text-sm">
+                <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5 sm:mt-0" />
+                <div>
+                  <span className="font-extrabold">Avviso Connessione Database Supabase: </span>
+                  <span className="text-rose-800">{booksError}</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshBooks()}
+                disabled={booksLoading}
+                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shrink-0 transition cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${booksLoading ? 'animate-spin' : ''}`} />
+                <span>{booksLoading ? 'Connessione...' : 'Riprova connessione'}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Main Tab Content */}
         <main className={`flex-1 w-full mx-auto ${widthClass} ${densityClass}`}>
           {currentTab === 'dashboard' && (
@@ -119,7 +144,7 @@ function MainAppContent() {
               <span className="hidden md:inline">• Supporto Lettori Barcode USB</span>
             </div>
             <div className="text-slate-400">
-              Dati memorizzati localmente con persistenza • Pronto per LIM e tablet
+              Catalogo libri persistente su Supabase • Pronto per LIM e tablet
             </div>
           </div>
         </footer>

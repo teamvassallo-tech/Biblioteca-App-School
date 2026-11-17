@@ -57,6 +57,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
   const [coverCandidates, setCoverCandidates] = useState<Array<{ source: string; url: string }>>([]);
   const [isSearchingOriginalCovers, setIsSearchingOriginalCovers] = useState(false);
   const [detectedClassification, setDetectedClassification] = useState<BookClassification | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const isbnInputRef = useRef<HTMLInputElement>(null);
   const coverImageInputRef = useRef<HTMLInputElement>(null);
@@ -83,6 +85,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
       setCoverCandidates([]);
       setCopiesTotal(1);
       setActiveTab('isbn');
+      setIsSaving(false);
+      setSaveError(null);
       // Auto-focus the ISBN input for instant USB scanner scan
       setTimeout(() => isbnInputRef.current?.focus(), 100);
     }
@@ -229,9 +233,11 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
     }
   };
 
-  // Submit book
-  const handleSubmit = (e: React.FormEvent) => {
+  // Submit book to Supabase
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
+
     if (!title.trim()) {
       triggerScanFeedback('error', 'Il titolo del libro è obbligatorio.');
       return;
@@ -242,26 +248,37 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
       .map((a) => a.trim())
       .filter(Boolean);
 
-    const newBook = addBook({
-      inventoryCode: inventoryCode.trim() || `LIB-${Date.now()}`,
-      isbn: isbn.trim() || undefined,
-      title: title.trim(),
-      authors: authorList.length > 0 ? authorList : ['Autore sconosciuto'],
-      publisher: publisher.trim() || undefined,
-      publicationYear: publicationYear.trim() || undefined,
-      genre,
-      ageGroup,
-      collocazione: collocazione.trim() || 'Scaffale Biblioteca',
-      coverUrl: coverUrl.trim() || undefined,
-      synopsis: synopsis.trim() || undefined,
-      copiesTotal: Number(copiesTotal) || 1,
-      copiesAvailable: Number(copiesTotal) || 1,
-      status: 'Disponibile',
-    });
+    setIsSaving(true);
+    setSaveError(null);
 
-    triggerScanFeedback('success', `Libro aggiunto con successo: "${newBook.title}"`);
-    if (onBookAdded) onBookAdded(newBook);
-    onClose();
+    try {
+      const newBook = await addBook({
+        inventoryCode: inventoryCode.trim() || `LIB-${Date.now()}`,
+        isbn: isbn.trim() || undefined,
+        title: title.trim(),
+        authors: authorList.length > 0 ? authorList : ['Autore sconosciuto'],
+        publisher: publisher.trim() || undefined,
+        publicationYear: publicationYear.trim() || undefined,
+        genre,
+        ageGroup,
+        collocazione: collocazione.trim() || 'Scaffale Biblioteca',
+        coverUrl: coverUrl.trim() || undefined,
+        synopsis: synopsis.trim() || undefined,
+        copiesTotal: Number(copiesTotal) || 1,
+        copiesAvailable: Number(copiesTotal) || 1,
+        status: 'Disponibile',
+      });
+
+      triggerScanFeedback('success', `Libro salvato su Supabase: "${newBook.title}"`);
+      if (onBookAdded) onBookAdded(newBook);
+      onClose();
+    } catch (err: any) {
+      setSaveError(
+        err?.message || 'Impossibile salvare il libro: database Supabase non raggiungibile.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -760,21 +777,42 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose, onB
               />
             </div>
 
+            {saveError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold">Errore di connessione al database Supabase</div>
+                  <p className="mt-0.5 text-rose-800">{saveError}</p>
+                </div>
+              </div>
+            )}
+
             {/* Footer Buttons */}
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 transition"
+                disabled={isSaving}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 disabled:opacity-50 transition"
               >
                 Annulla
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-indigo-600/20 transition flex items-center gap-1.5"
+                disabled={isSaving}
+                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-indigo-600/20 transition flex items-center gap-1.5 cursor-pointer"
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Salva Libro a Catalogo</span>
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Salvataggio su Supabase...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Salva Libro a Catalogo</span>
+                  </>
+                )}
               </button>
             </div>
           </form>

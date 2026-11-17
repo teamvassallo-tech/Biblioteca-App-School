@@ -54,6 +54,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [isFetchingCover, setIsFetchingCover] = useState(false);
   const [coverCandidates, setCoverCandidates] = useState<Array<{ source: string; url: string }>>([]);
   const [isLabelPrinterOpen, setIsLabelPrinterOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
@@ -83,12 +84,14 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       const res = await fetch(`/api/cover-lookup/${encodeURIComponent(cleanIsbn)}`);
       const data = await res.json();
       if (data.found && data.coverUrl) {
-        updateBook(book.id, { coverUrl: data.coverUrl });
-        setCoverUrl(data.coverUrl);
-        if (data.coverCandidates && Array.isArray(data.coverCandidates)) {
-          setCoverCandidates(data.coverCandidates);
+        const ok = await updateBook(book.id, { coverUrl: data.coverUrl });
+        if (ok) {
+          setCoverUrl(data.coverUrl);
+          if (data.coverCandidates && Array.isArray(data.coverCandidates)) {
+            setCoverCandidates(data.coverCandidates);
+          }
+          triggerScanFeedback('success', `Copertina originale recuperata e salvata da ${data.source}!`);
         }
-        triggerScanFeedback('success', `Copertina originale recuperata e salvata da ${data.source}!`);
       } else {
         triggerScanFeedback('error', 'Copertina fotografica non reperita nelle banche dati.');
       }
@@ -104,25 +107,31 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUri = reader.result as string;
-      updateBook(book.id, { coverUrl: dataUri });
-      setCoverUrl(dataUri);
-      triggerScanFeedback('success', 'Nuova foto di copertina salvata!');
+      const ok = await updateBook(book.id, { coverUrl: dataUri });
+      if (ok) {
+        setCoverUrl(dataUri);
+        triggerScanFeedback('success', 'Nuova foto di copertina salvata!');
+      }
     };
     reader.readAsDataURL(file);
   };
 
   // Generate Artistic Graphic Cover Action
-  const handleSetGraphicCover = () => {
+  const handleSetGraphicCover = async () => {
     const graphic = generateBookCoverDataUrl(book.title, (book.authors || []).join(', '), book.genre);
-    updateBook(book.id, { coverUrl: graphic });
-    setCoverUrl(graphic);
-    triggerScanFeedback('success', 'Copertina grafica scolastica ad alta definizione impostata!');
+    const ok = await updateBook(book.id, { coverUrl: graphic });
+    if (ok) {
+      setCoverUrl(graphic);
+      triggerScanFeedback('success', 'Copertina grafica scolastica ad alta definizione impostata!');
+    }
   };
 
-  const handleSaveEdit = (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
+
     const updatedAuthors = authors
       .split(/[,;/]/)
       .map((a) => a.trim())
@@ -132,35 +141,49 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     const copiesDiff = copiesTotal - book.copiesTotal;
     const newCopiesAvailable = Math.max(0, book.copiesAvailable + copiesDiff);
 
-    updateBook(book.id, {
-      title: title.trim(),
-      authors: updatedAuthors,
-      publisher: publisher.trim() || undefined,
-      publicationYear: publicationYear.trim() || undefined,
-      genre,
-      ageGroup,
-      collocazione: collocazione.trim(),
-      synopsis: synopsis.trim() || undefined,
-      coverUrl: coverUrl.trim() || undefined,
-      copiesTotal,
-      copiesAvailable: newCopiesAvailable,
-      status: newCopiesAvailable > 0 ? 'Disponibile' : 'In Prestito',
-    });
+    setIsSaving(true);
+    try {
+      const ok = await updateBook(book.id, {
+        title: title.trim(),
+        authors: updatedAuthors,
+        publisher: publisher.trim() || undefined,
+        publicationYear: publicationYear.trim() || undefined,
+        genre,
+        ageGroup,
+        collocazione: collocazione.trim(),
+        synopsis: synopsis.trim() || undefined,
+        coverUrl: coverUrl.trim() || undefined,
+        copiesTotal,
+        copiesAvailable: newCopiesAvailable,
+        status: newCopiesAvailable > 0 ? 'Disponibile' : 'In Prestito',
+      });
 
-    setIsEditing(false);
-    triggerScanFeedback('success', `Scheda del libro "${title}" aggiornata con successo!`);
+      if (ok) {
+        setIsEditing(false);
+        triggerScanFeedback('success', `Scheda del libro "${title}" aggiornata su Supabase!`);
+      }
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (activeLoan) {
       triggerScanFeedback('error', 'Impossibile eliminare un libro attualmente in prestito!');
       return;
     }
 
     if (window.confirm(`Sei sicuro di voler rimuovere definitivamente "${book.title}" dal catalogo?`)) {
-      deleteBook(book.id);
-      triggerScanFeedback('info', `Libro "${book.title}" rimosso dal catalogo.`);
-      onClose();
+      setIsSaving(true);
+      try {
+        const ok = await deleteBook(book.id);
+        if (ok) {
+          triggerScanFeedback('info', `Libro "${book.title}" rimosso dal catalogo.`);
+          onClose();
+        }
+      } finally {
+        setIsSaving(false);
+      }
     }
   };
 
@@ -343,9 +366,11 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5"
+                disabled={isSaving}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl flex items-center gap-1.5"
               >
-                <Check className="w-4 h-4" /> Salva Modifiche
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <span>{isSaving ? 'Salvataggio...' : 'Salva Modifiche'}</span>
               </button>
             </div>
           </form>
@@ -382,10 +407,12 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                           <button
                             key={idx}
                             type="button"
-                            onClick={() => {
-                              updateBook(book.id, { coverUrl: cand.url });
-                              setCoverUrl(cand.url);
-                              triggerScanFeedback('success', `Copertina impostata: ${cand.source}`);
+                            onClick={async () => {
+                              const ok = await updateBook(book.id, { coverUrl: cand.url });
+                              if (ok) {
+                                setCoverUrl(cand.url);
+                                triggerScanFeedback('success', `Copertina impostata: ${cand.source}`);
+                              }
                             }}
                             className={`shrink-0 w-10 h-14 rounded border overflow-hidden transition relative cursor-pointer ${
                               isSelected

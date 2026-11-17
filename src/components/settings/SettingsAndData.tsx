@@ -149,8 +149,10 @@ export const SettingsAndData: React.FC = () => {
           );
         }
 
-        updateBook(book.id, { coverUrl: resolvedCover });
-        updatedCount++;
+        const ok = await updateBook(book.id, { coverUrl: resolvedCover });
+        if (ok) {
+          updatedCount++;
+        }
       }
     }
 
@@ -191,14 +193,14 @@ export const SettingsAndData: React.FC = () => {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const content = event.target?.result as string;
 
         if (file.name.endsWith('.json')) {
           const parsed = JSON.parse(content);
           if (parsed && (parsed.books || parsed.students || parsed.loans)) {
-            restoreDataPackage(parsed, true);
+            await restoreDataPackage(parsed, true);
             setImportStatus('Backup JSON ripristinato con successo!');
           } else {
             triggerScanFeedback('error', 'Formato JSON non riconosciuto.');
@@ -244,7 +246,7 @@ export const SettingsAndData: React.FC = () => {
               });
             }
 
-            restoreDataPackage({ books: importedBooks }, false);
+            await restoreDataPackage({ books: importedBooks }, false);
             setImportStatus(`Importati ${importedBooks.length} libri dal file CSV!`);
           } else if (headerRow.some((h) => h.includes('cognome') || h.includes('alunno') || h.includes('classe'))) {
             // Students CSV import
@@ -270,7 +272,7 @@ export const SettingsAndData: React.FC = () => {
               });
             }
 
-            restoreDataPackage({ students: importedStudents }, false);
+            await restoreDataPackage({ students: importedStudents }, false);
             setImportStatus(`Importati ${importedStudents.length} alunni dal file CSV!`);
           } else {
             triggerScanFeedback('error', 'Struttura CSV non riconosciuta. Assicurati che contenga colonne per Libri o Alunni.');
@@ -287,16 +289,16 @@ export const SettingsAndData: React.FC = () => {
   };
 
   // Critical Reset Confirmation
-  const handleConfirmReset = () => {
+  const handleConfirmReset = async () => {
     if (confirmDeleteText.trim().toUpperCase() !== 'CANCELLA') {
       triggerScanFeedback('error', 'Parola chiave di sicurezza non corretta. Digita "CANCELLA".');
       return;
     }
 
     if (resetScope === 'current_school') {
-      resetCurrentSchoolData();
+      await resetCurrentSchoolData();
     } else {
-      resetTotalSystem();
+      await resetTotalSystem();
     }
 
     setIsResetModalOpen(false);

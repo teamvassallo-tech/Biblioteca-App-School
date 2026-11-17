@@ -10,6 +10,17 @@ import {
   UserRole,
 } from '../types';
 import { playScanSuccess, playScanError, playReturnSuccess } from '../utils/audio';
+import { isSupabaseConfigured, getSupabaseConfigError, formatSupabaseError } from '../lib/supabase';
+import {
+  fetchBooksBySchoolFromSupabase,
+  insertBookToSupabase,
+  updateBookInSupabase,
+  batchUpdateBooksInSupabase,
+  deleteBookFromSupabase,
+  deleteBooksBySchoolFromSupabase,
+  deleteAllBooksFromSupabase,
+  upsertBooksToSupabase,
+} from '../services/supabaseBooks';
 
 export interface LibraryContextType {
   // Authentication & Multi-Tenant state
@@ -36,6 +47,10 @@ export interface LibraryContextType {
 
   // Multi-tenant scoped Data (filtered strictly by currentSchool.id)
   books: Book[];
+  booksLoading: boolean;
+  booksError: string | null;
+  isSupabaseConfigured: boolean;
+  refreshBooks: () => Promise<void>;
   students: Student[];
   loans: Loan[];
   settings: AppSettings;
@@ -43,11 +58,11 @@ export interface LibraryContextType {
   clearScanToast: () => void;
   triggerScanFeedback: (type: 'success' | 'error' | 'info', message: string) => void;
 
-  // Book actions (scoped to active school)
-  addBook: (bookData: Omit<Book, 'id' | 'createdAt' | 'updatedAt' | 'schoolId'>) => Book;
-  updateBook: (id: string, updates: Partial<Book>) => void;
-  batchUpdateBooks: (updatesList: Array<{ id: string; changes: Partial<Book> }>) => void;
-  deleteBook: (id: string) => void;
+  // Book actions (scoped to active school, persisted exclusively on Supabase)
+  addBook: (bookData: Omit<Book, 'id' | 'createdAt' | 'updatedAt' | 'schoolId'>) => Promise<Book>;
+  updateBook: (id: string, updates: Partial<Book>) => Promise<boolean>;
+  batchUpdateBooks: (updatesList: Array<{ id: string; changes: Partial<Book> }>) => Promise<boolean>;
+  deleteBook: (id: string) => Promise<boolean>;
   findBookByCode: (code: string) => Book | undefined;
 
   // Student actions (scoped to active school)
@@ -64,17 +79,16 @@ export interface LibraryContextType {
 
   // Settings & Reset
   updateSettings: (newSettings: Partial<AppSettings>) => void;
-  resetCurrentSchoolData: () => void;
-  resetTotalSystem: () => void;
+  resetCurrentSchoolData: () => Promise<void>;
+  resetTotalSystem: () => Promise<void>;
 
   // Import (scoped to active school)
-  restoreDataPackage: (data: { books?: Book[]; students?: Student[]; loans?: Loan[]; settings?: AppSettings }, overwrite: boolean) => void;
+  restoreDataPackage: (data: { books?: Book[]; students?: Student[]; loans?: Loan[]; settings?: AppSettings }, overwrite: boolean) => Promise<void>;
 }
 
 const STORAGE_KEY_SCHOOLS = 'biblioscuola_schools_v2';
 const STORAGE_KEY_USERS = 'biblioscuola_users_v2';
 const STORAGE_KEY_CURRENT_USER = 'biblioscuola_current_user_v2';
-const STORAGE_KEY_BOOKS = 'biblioscuola_books_v1';
 const STORAGE_KEY_STUDENTS = 'biblioscuola_students_v1';
 const STORAGE_KEY_LOANS = 'biblioscuola_loans_v1';
 const STORAGE_KEY_SETTINGS_PREFIX = 'biblioscuola_settings_v2_';
@@ -238,21 +252,12 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, [currentUser, allSchools]);
 
-  // 4. Books Repository (global table, partitioned by schoolId)
-  const [allBooks, setAllBooks] = useState<Book[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_BOOKS);
-      if (saved) {
-        const parsed: Book[] = JSON.parse(saved);
-        // Backwards compatibility migration: tag unassigned books with ic-erasmo
-        return parsed.map((b) => ({
-          ...b,
-          schoolId: b.schoolId || 'ic-erasmo',
-        }));
-      }
-    } catch {}
-    return [];
-  });
+  // 4. Books Repository (sourced exclusively from Supabase, never mocked or seeded from localStorage)
+  const [allBooks, setAllBooks] = useState<Book[]>([]);
+  const [booksLoading, setBooksLoading] = useState<boolean>(false);
+  const [booksError, setBooksError] = useState<string | null>(() =>
+    isSupabaseConfigured ? null : getSupabaseConfigError()
+  );
 
   // 5. Students Repository (global table, partitioned by schoolId)
   const [allStudents, setAllStudents] = useState<Student[]>(() => {
@@ -341,10 +346,7 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
     localStorage.setItem(key, JSON.stringify(settings));
   }, [settings, currentSchool]);
 
-  // Sync All Books to LocalStorage
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_BOOKS, JSON.stringify(allBooks));
-  }, [allBooks]);
+  // Books are persisted exclusively on Supabase (no localStorage caching or mock seeding)
 
   // Sync All Students to LocalStorage
   useEffect(() => {
@@ -372,6 +374,39 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Strict tenant filtering: Expose only data belonging to the connected user's school
   const activeSchoolId = currentSchool?.id || '';
+
+  const refreshBooks = useCallback(async () => {
+    if (!activeSchoolId) {
+      setAllBooks([]);
+      return;
+    }
+
+    if (!isSupabaseConfigured) {
+      setAllBooks([]);
+      setBooksLoading(false);
+      setBooksError(getSupabaseConfigError());
+      return;
+    }
+
+    setBooksLoading(true);
+    setBooksError(null);
+
+    try {
+      const remoteBooks = await fetchBooksBySchoolFromSupabase(activeSchoolId);
+      setAllBooks(remoteBooks);
+      setBooksError(null);
+    } catch (err) {
+      const message = formatSupabaseError(err, 'lettura catalogo');
+      setBooksError(message);
+      setAllBooks([]);
+    } finally {
+      setBooksLoading(false);
+    }
+  }, [activeSchoolId]);
+
+  useEffect(() => {
+    void refreshBooks();
+  }, [refreshBooks]);
 
   const scopedBooks = useMemo(() => {
     if (!activeSchoolId) return [];
@@ -604,61 +639,108 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const addBook = useCallback(
-    (bookData: Omit<Book, 'id' | 'createdAt' | 'updatedAt' | 'schoolId'>): Book => {
+    async (bookData: Omit<Book, 'id' | 'createdAt' | 'updatedAt' | 'schoolId'>): Promise<Book> => {
       const now = new Date().toISOString();
+      const targetSchoolId = activeSchoolId || 'ic-erasmo';
       const newBook: Book = {
         ...bookData,
         id: `lib_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        schoolId: activeSchoolId || 'ic-erasmo',
+        schoolId: targetSchoolId,
         createdAt: now,
         updatedAt: now,
       };
-      setAllBooks((prev) => [newBook, ...prev]);
-      return newBook;
+
+      try {
+        const savedBook = await insertBookToSupabase(newBook);
+        setAllBooks((prev) => [savedBook, ...prev]);
+        setBooksError(null);
+        return savedBook;
+      } catch (err) {
+        const message = formatSupabaseError(err, 'salvataggio libro');
+        setBooksError(message);
+        triggerScanFeedback('error', message);
+        throw new Error(message);
+      }
     },
-    [activeSchoolId]
+    [activeSchoolId, triggerScanFeedback]
   );
 
   const updateBook = useCallback(
-    (id: string, updates: Partial<Book>) => {
+    async (id: string, updates: Partial<Book>): Promise<boolean> => {
+      const targetSchoolId = activeSchoolId || 'ic-erasmo';
       const now = new Date().toISOString();
-      setAllBooks((prev) =>
-        prev.map((b) =>
-          b.id === id && (b.schoolId || 'ic-erasmo') === activeSchoolId
-            ? { ...b, ...updates, updatedAt: now }
-            : b
-        )
-      );
+
+      try {
+        const updated = await updateBookInSupabase(id, targetSchoolId, updates, now);
+        setAllBooks((prev) =>
+          prev.map((b) =>
+            b.id === id && (b.schoolId || 'ic-erasmo') === targetSchoolId
+              ? updated || { ...b, ...updates, updatedAt: now }
+              : b
+          )
+        );
+        setBooksError(null);
+        return true;
+      } catch (err) {
+        const message = formatSupabaseError(err, 'aggiornamento libro');
+        setBooksError(message);
+        triggerScanFeedback('error', message);
+        return false;
+      }
     },
-    [activeSchoolId]
+    [activeSchoolId, triggerScanFeedback]
   );
 
   const batchUpdateBooks = useCallback(
-    (updatesList: Array<{ id: string; changes: Partial<Book> }>) => {
-      const map = new Map<string, Partial<Book>>();
-      for (const item of updatesList) {
-        map.set(item.id, item.changes);
-      }
+    async (updatesList: Array<{ id: string; changes: Partial<Book> }>): Promise<boolean> => {
+      if (updatesList.length === 0) return true;
+      const targetSchoolId = activeSchoolId || 'ic-erasmo';
       const now = new Date().toISOString();
-      setAllBooks((prev) =>
-        prev.map((b) => {
-          if ((b.schoolId || 'ic-erasmo') !== activeSchoolId) return b;
-          const changes = map.get(b.id);
-          if (!changes) return b;
-          return { ...b, ...changes, updatedAt: now };
-        })
-      );
+
+      try {
+        await batchUpdateBooksInSupabase(updatesList, targetSchoolId, now);
+        const map = new Map<string, Partial<Book>>();
+        for (const item of updatesList) {
+          map.set(item.id, item.changes);
+        }
+        setAllBooks((prev) =>
+          prev.map((b) => {
+            if ((b.schoolId || 'ic-erasmo') !== targetSchoolId) return b;
+            const changes = map.get(b.id);
+            if (!changes) return b;
+            return { ...b, ...changes, updatedAt: now };
+          })
+        );
+        setBooksError(null);
+        return true;
+      } catch (err) {
+        const message = formatSupabaseError(err, 'aggiornamento multiplo libri');
+        setBooksError(message);
+        triggerScanFeedback('error', message);
+        return false;
+      }
     },
-    [activeSchoolId]
+    [activeSchoolId, triggerScanFeedback]
   );
 
   const deleteBook = useCallback(
-    (id: string) => {
-      setAllBooks((prev) =>
-        prev.filter((b) => !(b.id === id && (b.schoolId || 'ic-erasmo') === activeSchoolId))
-      );
+    async (id: string): Promise<boolean> => {
+      const targetSchoolId = activeSchoolId || 'ic-erasmo';
+      try {
+        await deleteBookFromSupabase(id, targetSchoolId);
+        setAllBooks((prev) =>
+          prev.filter((b) => !(b.id === id && (b.schoolId || 'ic-erasmo') === targetSchoolId))
+        );
+        setBooksError(null);
+        return true;
+      } catch (err) {
+        const message = formatSupabaseError(err, 'eliminazione libro');
+        setBooksError(message);
+        triggerScanFeedback('error', message);
+        return false;
+      }
     },
-    [activeSchoolId]
+    [activeSchoolId, triggerScanFeedback]
   );
 
   // ===================== SCOPED STUDENT ACTIONS =====================
@@ -891,106 +973,132 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   // Safe Reset for Current School only (Leaves other schools untouched)
-  const resetCurrentSchoolData = useCallback(() => {
+  const resetCurrentSchoolData = useCallback(async () => {
     if (!activeSchoolId) return;
 
-    setAllBooks((prev) => prev.filter((b) => (b.schoolId || 'ic-erasmo') !== activeSchoolId));
-    setAllStudents((prev) => prev.filter((s) => (s.schoolId || 'ic-erasmo') !== activeSchoolId));
-    setAllLoans((prev) => prev.filter((l) => (l.schoolId || 'ic-erasmo') !== activeSchoolId));
+    try {
+      await deleteBooksBySchoolFromSupabase(activeSchoolId);
+      setAllBooks((prev) => prev.filter((b) => (b.schoolId || 'ic-erasmo') !== activeSchoolId));
+      setAllStudents((prev) => prev.filter((s) => (s.schoolId || 'ic-erasmo') !== activeSchoolId));
+      setAllLoans((prev) => prev.filter((l) => (l.schoolId || 'ic-erasmo') !== activeSchoolId));
+      setBooksError(null);
 
-    triggerScanFeedback(
-      'info',
-      `Archivio della scuola "${currentSchool?.name || activeSchoolId}" azzerato. I dati delle altre scuole sono preservati.`
-    );
+      triggerScanFeedback(
+        'info',
+        `Archivio della scuola "${currentSchool?.name || activeSchoolId}" azzerato. I dati delle altre scuole sono preservati.`
+      );
+    } catch (err) {
+      const message = formatSupabaseError(err, 'azzeramento archivio scuola');
+      setBooksError(message);
+      triggerScanFeedback('error', message);
+    }
   }, [activeSchoolId, currentSchool, triggerScanFeedback]);
 
   // Total System Reset
-  const resetTotalSystem = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY_BOOKS);
-    localStorage.removeItem(STORAGE_KEY_STUDENTS);
-    localStorage.removeItem(STORAGE_KEY_LOANS);
+  const resetTotalSystem = useCallback(async () => {
+    try {
+      await deleteAllBooksFromSupabase();
+      localStorage.removeItem(STORAGE_KEY_STUDENTS);
+      localStorage.removeItem(STORAGE_KEY_LOANS);
 
-    for (const s of allSchools) {
-      localStorage.removeItem(`${STORAGE_KEY_SETTINGS_PREFIX}${s.id}`);
+      for (const s of allSchools) {
+        localStorage.removeItem(`${STORAGE_KEY_SETTINGS_PREFIX}${s.id}`);
+      }
+
+      setAllBooks([]);
+      setAllStudents([]);
+      setAllLoans([]);
+      setSettings(buildDefaultSettings(currentSchool));
+      setBooksError(null);
+
+      triggerScanFeedback('info', 'Reset totale effettuato su tutti gli archivi del sistema.');
+    } catch (err) {
+      const message = formatSupabaseError(err, 'reset globale');
+      setBooksError(message);
+      triggerScanFeedback('error', message);
     }
-
-    setAllBooks([]);
-    setAllStudents([]);
-    setAllLoans([]);
-    setSettings(buildDefaultSettings(currentSchool));
-
-    triggerScanFeedback('info', 'Reset totale effettuato su tutti gli archivi del sistema.');
   }, [allSchools, currentSchool, triggerScanFeedback]);
 
   // Import / Restore package scoped to active school
   const restoreDataPackage = useCallback(
-    (
+    async (
       data: { books?: Book[]; students?: Student[]; loans?: Loan[]; settings?: AppSettings },
       overwrite: boolean
     ) => {
       const targetSchoolId = activeSchoolId || 'ic-erasmo';
 
-      if (overwrite) {
-        // Remove only this school's items and replace
-        const newBooks = (data.books || []).map((b) => ({ ...b, schoolId: targetSchoolId }));
-        const newStudents = (data.students || []).map((s) => ({ ...s, schoolId: targetSchoolId }));
-        const newLoans = (data.loans || []).map((l) => ({ ...l, schoolId: targetSchoolId }));
+      try {
+        if (overwrite) {
+          const newBooks = (data.books || []).map((b) => ({ ...b, schoolId: targetSchoolId }));
+          await deleteBooksBySchoolFromSupabase(targetSchoolId);
+          const insertedBooks = newBooks.length > 0 ? await upsertBooksToSupabase(newBooks) : [];
 
-        setAllBooks((prev) => [
-          ...prev.filter((b) => (b.schoolId || 'ic-erasmo') !== targetSchoolId),
-          ...newBooks,
-        ]);
-        setAllStudents((prev) => [
-          ...prev.filter((s) => (s.schoolId || 'ic-erasmo') !== targetSchoolId),
-          ...newStudents,
-        ]);
-        setAllLoans((prev) => [
-          ...prev.filter((l) => (l.schoolId || 'ic-erasmo') !== targetSchoolId),
-          ...newLoans,
-        ]);
+          const newStudents = (data.students || []).map((s) => ({ ...s, schoolId: targetSchoolId }));
+          const newLoans = (data.loans || []).map((l) => ({ ...l, schoolId: targetSchoolId }));
 
-        if (data.settings) {
-          setSettings({ ...buildDefaultSettings(currentSchool), ...data.settings, schoolId: targetSchoolId });
+          setAllBooks((prev) => [
+            ...prev.filter((b) => (b.schoolId || 'ic-erasmo') !== targetSchoolId),
+            ...insertedBooks,
+          ]);
+          setAllStudents((prev) => [
+            ...prev.filter((s) => (s.schoolId || 'ic-erasmo') !== targetSchoolId),
+            ...newStudents,
+          ]);
+          setAllLoans((prev) => [
+            ...prev.filter((l) => (l.schoolId || 'ic-erasmo') !== targetSchoolId),
+            ...newLoans,
+          ]);
+
+          if (data.settings) {
+            setSettings({ ...buildDefaultSettings(currentSchool), ...data.settings, schoolId: targetSchoolId });
+          }
+        } else {
+          if (data.books && data.books.length > 0) {
+            const toAdd = data.books.map((b) => ({
+              ...b,
+              schoolId: targetSchoolId,
+              id: b.id.includes(targetSchoolId) ? b.id : `${b.id}_${targetSchoolId}`,
+            }));
+            const savedBooks = await upsertBooksToSupabase(toAdd);
+            setAllBooks((prev) => {
+              const existingIds = new Set(prev.map((b) => b.id));
+              const filtered = savedBooks.filter((b) => !existingIds.has(b.id));
+              return [...filtered, ...prev];
+            });
+          }
+          if (data.students && data.students.length > 0) {
+            const toAdd = data.students.map((s) => ({
+              ...s,
+              schoolId: targetSchoolId,
+              id: s.id.includes(targetSchoolId) ? s.id : `${s.id}_${targetSchoolId}`,
+            }));
+            setAllStudents((prev) => {
+              const existingIds = new Set(prev.map((s) => s.id));
+              const filtered = toAdd.filter((s) => !existingIds.has(s.id));
+              return [...prev, ...filtered];
+            });
+          }
+          if (data.loans && data.loans.length > 0) {
+            const toAdd = data.loans.map((l) => ({
+              ...l,
+              schoolId: targetSchoolId,
+              id: l.id.includes(targetSchoolId) ? l.id : `${l.id}_${targetSchoolId}`,
+            }));
+            setAllLoans((prev) => {
+              const existingIds = new Set(prev.map((l) => l.id));
+              const filtered = toAdd.filter((l) => !existingIds.has(l.id));
+              return [...prev, ...filtered];
+            });
+          }
         }
-      } else {
-        if (data.books && data.books.length > 0) {
-          const toAdd = data.books.map((b) => ({
-            ...b,
-            schoolId: targetSchoolId,
-            id: b.id.includes(targetSchoolId) ? b.id : `${b.id}_${targetSchoolId}`,
-          }));
-          setAllBooks((prev) => {
-            const existingIds = new Set(prev.map((b) => b.id));
-            const filtered = toAdd.filter((b) => !existingIds.has(b.id));
-            return [...prev, ...filtered];
-          });
-        }
-        if (data.students && data.students.length > 0) {
-          const toAdd = data.students.map((s) => ({
-            ...s,
-            schoolId: targetSchoolId,
-            id: s.id.includes(targetSchoolId) ? s.id : `${s.id}_${targetSchoolId}`,
-          }));
-          setAllStudents((prev) => {
-            const existingIds = new Set(prev.map((s) => s.id));
-            const filtered = toAdd.filter((s) => !existingIds.has(s.id));
-            return [...prev, ...filtered];
-          });
-        }
-        if (data.loans && data.loans.length > 0) {
-          const toAdd = data.loans.map((l) => ({
-            ...l,
-            schoolId: targetSchoolId,
-            id: l.id.includes(targetSchoolId) ? l.id : `${l.id}_${targetSchoolId}`,
-          }));
-          setAllLoans((prev) => {
-            const existingIds = new Set(prev.map((l) => l.id));
-            const filtered = toAdd.filter((l) => !existingIds.has(l.id));
-            return [...prev, ...filtered];
-          });
-        }
+
+        setBooksError(null);
+        triggerScanFeedback('success', `Dati importati su Supabase per la scuola: ${currentSchool?.name || targetSchoolId}!`);
+      } catch (err) {
+        const message = formatSupabaseError(err, 'importazione dati');
+        setBooksError(message);
+        triggerScanFeedback('error', message);
       }
-      triggerScanFeedback('success', `Dati importati per la scuola: ${currentSchool?.name || targetSchoolId}!`);
     },
     [activeSchoolId, currentSchool, triggerScanFeedback]
   );
@@ -1008,6 +1116,10 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
         switchSchool,
         addSchool,
         books: scopedBooks,
+        booksLoading,
+        booksError,
+        isSupabaseConfigured,
+        refreshBooks,
         students: scopedStudents,
         loans: scopedLoans,
         settings,

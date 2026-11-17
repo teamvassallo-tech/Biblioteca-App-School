@@ -12,13 +12,7 @@ interface LabelPrinterProps {
   autoPrint?: boolean;
 }
 
-function truncateText(text: string, maxLen = 25): string {
-  const clean = (text || '').trim();
-  if (clean.length <= maxLen) return clean;
-  return clean.slice(0, maxLen).trimEnd() + '…';
-}
-
-const ThermalLabelContent: React.FC<{
+export const ThermalLabelContent: React.FC<{
   book: Book;
   headerText: string;
   svgRef?: React.RefObject<SVGSVGElement | null>;
@@ -27,8 +21,9 @@ const ThermalLabelContent: React.FC<{
   const internalRef = useRef<SVGSVGElement | null>(null);
   const targetRef = svgRef || internalRef;
   const barcodeValue = (book.inventoryCode || book.isbn || 'LIB-0001').trim();
-  const truncatedTitle = truncateText(book.title, 25);
-  const collocazioneText = (book.collocazione || '').trim();
+  const authorsText = (book.authors || []).join(', ') || 'Autore n/d';
+  const collocazioneText = (book.collocazione || '').trim() || 'Biblioteca';
+  const genreText = (book.genre || '').trim() || 'Libro';
 
   useEffect(() => {
     if (targetRef.current && barcodeValue) {
@@ -38,10 +33,11 @@ const ThermalLabelContent: React.FC<{
           lineColor: '#000000',
           background: '#ffffff',
           width: 1.5,
-          height: 38,
+          height: 26,
           margin: 0,
           displayValue: false,
         });
+        targetRef.current.setAttribute('preserveAspectRatio', 'none');
       } catch (err) {
         console.error(`[LabelPrinter:${idPrefix}] Errore generazione barcode:`, err);
       }
@@ -53,91 +49,131 @@ const ThermalLabelContent: React.FC<{
       className="thermal-label-print"
       style={{
         width: '51mm',
-        height: '26mm',
+        maxWidth: '51mm',
+        height: '25.5mm',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        padding: '1.5mm 2mm',
         boxSizing: 'border-box',
-        padding: '1.5mm',
         overflow: 'hidden',
         backgroundColor: '#ffffff',
         color: '#000000',
       }}
     >
-      {/* Intestazione compatta */}
+      {/* Intestazione 6pt bold + Codice Inventario */}
       <div
         style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '2mm',
           fontSize: '6pt',
           fontWeight: 700,
           lineHeight: 1.1,
           textTransform: 'uppercase',
-          letterSpacing: '0.2pt',
-          textAlign: 'center',
-          width: '100%',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
           color: '#000000',
         }}
       >
-        {headerText}
-      </div>
-
-      {/* Codice a barre SVG CODE128 (~10mm di altezza, zero margini inutili) */}
-      <div
-        style={{
-          width: '100%',
-          height: '10mm',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          overflow: 'hidden',
-          margin: '0.4mm 0',
-        }}
-      >
-        <svg
-          ref={targetRef}
+        <span
           style={{
-            height: '10mm',
-            maxWidth: '47mm',
-            width: 'auto',
-            display: 'block',
-            margin: 0,
-            padding: 0,
-          }}
-        />
-      </div>
-
-      {/* Testo leggibile sotto il barcode: Codice Inventario + Collocazione / Titolo troncato */}
-      <div
-        style={{
-          width: '100%',
-          textAlign: 'center',
-          lineHeight: 1.15,
-          color: '#000000',
-        }}
-      >
-        <div
-          style={{
-            fontSize: '7.5pt',
-            fontWeight: 800,
-            fontFamily: 'monospace',
-            letterSpacing: '0.4pt',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-          }}
-        >
-          {barcodeValue}
-          {collocazioneText ? ` • ${truncateText(collocazioneText, 16)}` : ''}
-        </div>
-        <div
-          style={{
-            fontSize: '6pt',
-            fontWeight: 600,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
           }}
         >
-          {truncatedTitle}
+          {headerText}
+        </span>
+        <span style={{ fontFamily: 'monospace', whiteSpace: 'nowrap', flexShrink: 0 }}>
+          {barcodeValue}
+        </span>
+      </div>
+
+      {/* Titolo 7.5pt bold su una riga + Autore 6.5pt */}
+      <div style={{ width: '100%', color: '#000000', lineHeight: 1.15 }}>
+        <div
+          style={{
+            fontSize: '7.5pt',
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            width: '100%',
+            color: '#000000',
+          }}
+        >
+          {book.title}
         </div>
+        <div
+          style={{
+            fontSize: '6.5pt',
+            fontWeight: 400,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            width: '100%',
+            color: '#000000',
+          }}
+        >
+          {authorsText}
+        </div>
+      </div>
+
+      {/* Barcode SVG CODE128: 42mm x 7mm */}
+      <div
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+        }}
+      >
+        <svg
+          ref={targetRef}
+          style={{
+            width: '42mm',
+            height: '7mm',
+            display: 'block',
+            margin: '0 auto',
+            padding: 0,
+          }}
+        />
+      </div>
+
+      {/* Riga inferiore: Collocazione + Genere 6pt su tutta la larghezza */}
+      <div
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '2mm',
+          fontSize: '6pt',
+          fontWeight: 600,
+          lineHeight: 1.1,
+          color: '#000000',
+        }}
+      >
+        <span
+          style={{
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {collocazioneText}
+        </span>
+        <span
+          style={{
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
+        >
+          {genreText}
+        </span>
       </div>
     </div>
   );
@@ -154,8 +190,11 @@ export const LabelPrinter: React.FC<LabelPrinterProps> = ({
   const printSvgRef = useRef<SVGSVGElement | null>(null);
 
   const headerText = schoolName?.trim()
-    ? truncateText(schoolName.trim().toUpperCase(), 32)
+    ? schoolName.trim().toUpperCase()
     : 'BIBLIOTECA SCOLASTICA';
+
+  // Render strictly ONLY the selected single book ([book]) in the print portal
+  const singleBookToPrint: Book[] = [book];
 
   // Ensure portal mount exists for isolated 51x26mm print output
   const getPortalContainer = (): HTMLElement => {
@@ -211,7 +250,7 @@ export const LabelPrinter: React.FC<LabelPrinterProps> = ({
               <Barcode className="w-4 h-4 text-indigo-400" />
               <div>
                 <h3 className="font-bold text-sm">Stampa Etichetta Termica (51×26 mm)</h3>
-                <p className="text-[11px] text-slate-300">Calibrata per Brother TD-2320D</p>
+                <p className="text-[11px] text-slate-300">Calibrata per Brother TD-2320D • 1 foglio singolo</p>
               </div>
             </div>
             <button
@@ -226,7 +265,7 @@ export const LabelPrinter: React.FC<LabelPrinterProps> = ({
 
           <div className="p-5 space-y-4">
             <div className="text-xs text-slate-600 text-center">
-              Anteprima in scala reale (<strong>51mm × 26mm</strong> • Bianco e Nero puro):
+              Anteprima orizzontale (<strong>51mm × 26mm</strong> • Bianco e Nero puro):
             </div>
 
             {/* Preview Frame */}
@@ -280,14 +319,19 @@ export const LabelPrinter: React.FC<LabelPrinterProps> = ({
         </div>
       </div>
 
-      {/* Dedicated Hidden Print Portal rendered directly inside document.body */}
+      {/* Dedicated Hidden Print Portal rendering strictly ONLY [selectedBook] (1 page) */}
       {createPortal(
-        <ThermalLabelContent
-          book={book}
-          headerText={headerText}
-          svgRef={printSvgRef}
-          idPrefix="print"
-        />,
+        <>
+          {singleBookToPrint.map((selectedBook) => (
+            <ThermalLabelContent
+              key={selectedBook.id}
+              book={selectedBook}
+              headerText={headerText}
+              svgRef={printSvgRef}
+              idPrefix="print"
+            />
+          ))}
+        </>,
         portalContainer
       )}
     </>

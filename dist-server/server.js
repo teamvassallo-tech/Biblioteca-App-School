@@ -227,7 +227,9 @@ dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var app = express();
-var PORT = Number(process.env.PORT) || 3e3;
+var portArgIdx = process.argv.indexOf("--port");
+var cliPort = portArgIdx !== -1 ? Number(process.argv[portArgIdx + 1]) : NaN;
+var PORT = Number.isFinite(cliPort) && cliPort > 0 ? cliPort : process.env.NODE_ENV === "production" ? Number(process.env.PORT) || 3e3 : 3e3;
 app.use(express.json({ limit: "30mb" }));
 app.use(express.urlencoded({ extended: true, limit: "30mb" }));
 var Type = {
@@ -1202,7 +1204,10 @@ async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : void 0
+      },
       appType: "spa"
     });
     app.use(vite.middlewares);

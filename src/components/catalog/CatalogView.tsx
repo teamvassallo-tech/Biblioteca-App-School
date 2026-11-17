@@ -29,7 +29,11 @@ import {
   RotateCcw,
   Sparkles,
   SlidersHorizontal,
-  ChevronDown
+  ChevronDown,
+  AlertTriangle,
+  Database,
+  Loader2,
+  RefreshCw
 } from 'lucide-react';
 
 interface CatalogViewProps {
@@ -87,7 +91,15 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   isAddModalOpen: externalIsAddOpen,
   onCloseAddModal: externalOnCloseAdd,
 }) => {
-  const { books, triggerScanFeedback, batchUpdateBooks, settings } = useLibrary();
+  const {
+    books,
+    booksLoading,
+    booksError,
+    refreshBooks,
+    triggerScanFeedback,
+    batchUpdateBooks,
+    settings,
+  } = useLibrary();
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -107,7 +119,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Automatic Re-classification for catalog books (e.g. books that were initially saved as 'Narrativa')
-  const handleAutoFixCatalogGenres = () => {
+  const handleAutoFixCatalogGenres = async () => {
     if (books.length === 0) {
       triggerScanFeedback('info', 'Il catalogo è vuoto.');
       return;
@@ -134,13 +146,18 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       }
     }
 
-    if (updates.length > 0) {
-      batchUpdateBooks(updates);
-      triggerScanFeedback('success', `Rianalisi completata: aggiornati ${updatedCount} volumi con generi ed età appropriati!`);
-    } else {
-      triggerScanFeedback('info', 'Tutti i libri presenti hanno già un genere e fascia d\'età coerenti.');
+    try {
+      if (updates.length > 0) {
+        const ok = await batchUpdateBooks(updates);
+        if (ok) {
+          triggerScanFeedback('success', `Rianalisi completata: aggiornati ${updatedCount} volumi con generi ed età appropriati!`);
+        }
+      } else {
+        triggerScanFeedback('info', 'Tutti i libri presenti hanno già un genere e fascia d\'età coerenti.');
+      }
+    } finally {
+      setIsReclassifying(false);
     }
-    setIsReclassifying(false);
   };
 
   const handleOpenAddModal = () => {
@@ -736,17 +753,51 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
         )}
       </div>
 
-      {/* Catalog Display: Empty State vs Filter Zero Results vs Grid vs Table */}
-      {books.length === 0 ? (
+      {/* Catalog Display: DB Error vs Loading vs Empty State vs Filter Zero Results vs Grid vs Table */}
+      {booksError && books.length === 0 ? (
+        <div className="bg-rose-50 rounded-2xl border-2 border-rose-200 p-10 text-center shadow-xs space-y-3">
+          <div className="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 mx-auto flex items-center justify-center">
+            <Database className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-extrabold text-rose-950">
+            Connessione al database Supabase non disponibile
+          </h3>
+          <p className="text-sm text-rose-800 max-w-xl mx-auto leading-relaxed">
+            {booksError}
+          </p>
+          <p className="text-xs text-rose-700/90 max-w-lg mx-auto">
+            Per evitare perdite di dati tra un deploy e l&apos;altro, l&apos;applicazione non carica dati finti in locale. Verifica le variabili d&apos;ambiente <code className="font-mono bg-rose-100 px-1.5 py-0.5 rounded">VITE_SUPABASE_URL</code> e <code className="font-mono bg-rose-100 px-1.5 py-0.5 rounded">VITE_SUPABASE_ANON_KEY</code>.
+          </p>
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => void refreshBooks()}
+              disabled={booksLoading}
+              className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl text-sm font-bold shadow-md shadow-rose-600/20 inline-flex items-center gap-2 transition cursor-pointer"
+            >
+              <RefreshCw className={`w-4 h-4 ${booksLoading ? 'animate-spin' : ''}`} />
+              <span>{booksLoading ? 'Verifica connessione...' : 'Riprova Connessione Database'}</span>
+            </button>
+          </div>
+        </div>
+      ) : booksLoading && books.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center shadow-xs">
+          <div className="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center mb-3">
+            <Loader2 className="w-8 h-8 animate-spin" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-900">Caricamento catalogo da Supabase...</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto mt-1">
+            Sincronizzazione dei volumi registrati nel database in corso.
+          </p>
+        </div>
+      ) : books.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center shadow-xs">
           <div className="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center mb-3">
             <BookOpen className="w-8 h-8" />
           </div>
           <h3 className="text-lg font-bold text-slate-900">Il catalogo della biblioteca è vuoto</h3>
           <p className="text-sm text-slate-500 max-w-md mx-auto mt-1 mb-6">
-            Non è ancora presente alcun libro in archivio. Inizia a catalogare i primi volumi
-            scansionando il codice a barre ISBN con il lettore USB, oppure tramite la fotocamera con
-            riconoscimento OCR.
+            Non è ancora presente alcun libro nel database Supabase per questo istituto. Inizia a catalogare i primi volumi scansionando il codice ISBN con il lettore USB o inserendoli manualmente.
           </p>
           <button
             type="button"

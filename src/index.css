@@ -31,19 +31,20 @@
   display: none;
 }
 
-/* Brother TD-2320D 51mm x 26mm Thermal Label Base Style */
+/* Brother TD-2320D 51mm x 26mm Horizontal Thermal Label Base Style */
 .thermal-label-print {
   width: 51mm;
-  height: 26mm;
+  max-width: 51mm;
+  height: 25.5mm;
   box-sizing: border-box;
-  padding: 1.5mm;
+  padding: 1.5mm 2mm;
   overflow: hidden;
   background-color: #ffffff;
   color: #000000;
   display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: space-between;
+  align-items: stretch;
   font-family: Arial, Helvetica, sans-serif;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
@@ -51,9 +52,9 @@
 
 .thermal-label-print svg {
   display: block;
-  max-width: 100%;
-  height: 10mm;
-  margin: 0;
+  width: 42mm;
+  height: 7mm;
+  margin: 0 auto;
   padding: 0;
 }
 
@@ -87,12 +88,20 @@
   }
 
   /* Dedicated 51mm x 26mm thermal label print mode */
+  body.printing-thermal-label {
+    width: 51mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+
   body.printing-thermal-label #root {
     display: none !important;
   }
 
   body.printing-thermal-label #thermal-label-portal {
     display: block !important;
+    width: 51mm !important;
     margin: 0 !important;
     padding: 0 !important;
     background: #ffffff !important;
@@ -100,16 +109,35 @@
 
   .thermal-label-print {
     width: 51mm !important;
-    height: 26mm !important;
+    max-width: 51mm !important;
+    height: 25.5mm !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    align-items: stretch !important;
+    padding: 1.5mm 2mm !important;
     box-sizing: border-box !important;
-    padding: 1.5mm !important;
     overflow: hidden !important;
     background: #ffffff !important;
     color: #000000 !important;
     margin: 0 !important;
     border: none !important;
     box-shadow: none !important;
-    page-break-after: avoid !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: avoid !important;
     break-inside: avoid !important;
+  }
+
+  .thermal-label-print:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  .thermal-label-print svg {
+    width: 42mm !important;
+    height: 7mm !important;
+    display: block !important;
+    margin: 0 auto !important;
   }
 }
