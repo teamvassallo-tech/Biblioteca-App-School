@@ -5,6 +5,7 @@ import { generateBarcodeSvg } from '../../utils/barcode';
 import { BookCoverImage } from './BookCoverImage';
 import { generateBookCoverDataUrl } from '../../utils/coverGenerator';
 import { classifyBook } from '../../utils/bookClassifier';
+import { LabelPrinter } from './LabelPrinter';
 import {
   X,
   Edit2,
@@ -20,7 +21,8 @@ import {
   Camera,
   Sparkles,
   Loader2,
-  CheckCircle2
+  CheckCircle2,
+  Printer
 } from 'lucide-react';
 
 interface BookDetailModalProps {
@@ -51,6 +53,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [coverUrl, setCoverUrl] = useState(book.coverUrl || '');
   const [isFetchingCover, setIsFetchingCover] = useState(false);
   const [coverCandidates, setCoverCandidates] = useState<Array<{ source: string; url: string }>>([]);
+  const [isLabelPrinterOpen, setIsLabelPrinterOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
@@ -509,10 +512,21 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                   Inventario: {book.inventoryCode} {book.isbn && `• ISBN: ${book.isbn}`}
                 </div>
               </div>
-              <div
-                className="max-w-[180px]"
-                dangerouslySetInnerHTML={{ __html: barcodeSvg }}
-              />
+              <div className="flex items-center gap-3">
+                <div
+                  className="max-w-[180px]"
+                  dangerouslySetInnerHTML={{ __html: barcodeSvg }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsLabelPrinterOpen(true)}
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
+                  title="Stampa etichetta termica Brother TD-2320D (51mm x 26mm)"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Stampa Etichetta (51x26)</span>
+                </button>
+              </div>
             </div>
 
             {/* Synopsis */}
@@ -570,6 +584,15 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           </div>
         )}
       </div>
+
+      {isLabelPrinterOpen && (
+        <LabelPrinter
+          book={book}
+          isOpen={isLabelPrinterOpen}
+          onClose={() => setIsLabelPrinterOpen(false)}
+          schoolName={settings?.schoolName}
+        />
+      )}
     </div>
   );
 };

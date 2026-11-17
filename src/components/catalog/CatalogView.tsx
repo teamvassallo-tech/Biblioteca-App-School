@@ -4,6 +4,7 @@ import { Book, GENRE_OPTIONS, AGE_GROUP_OPTIONS } from '../../types';
 import { AddBookModal } from './AddBookModal';
 import { BookDetailModal } from './BookDetailModal';
 import { PrintBarcodesModal } from './PrintBarcodesModal';
+import { LabelPrinter } from './LabelPrinter';
 import { BookCoverImage } from './BookCoverImage';
 import { classifyBook } from '../../utils/bookClassifier';
 import {
@@ -86,7 +87,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   isAddModalOpen: externalIsAddOpen,
   onCloseAddModal: externalOnCloseAdd,
 }) => {
-  const { books, triggerScanFeedback, batchUpdateBooks } = useLibrary();
+  const { books, triggerScanFeedback, batchUpdateBooks, settings } = useLibrary();
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -101,6 +102,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   const [internalIsAddOpen, setInternalIsAddOpen] = useState(false);
   const [selectedBookForDetail, setSelectedBookForDetail] = useState<Book | null>(null);
   const [isPrintBarcodesOpen, setIsPrintBarcodesOpen] = useState(false);
+  const [bookToPrintLabel, setBookToPrintLabel] = useState<Book | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -915,13 +917,24 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                 {/* Card footer action */}
                 <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedBookForDetail(book)}
-                    className="text-xs font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
-                  >
-                    Dettagli
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBookForDetail(book)}
+                      className="text-xs font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
+                    >
+                      Dettagli
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBookToPrintLabel(book)}
+                      className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                      title="Stampa Etichetta (51x26)"
+                    >
+                      <Printer className="w-3 h-3" />
+                      <span>Etichetta</span>
+                    </button>
+                  </div>
 
                   {isAvailable && onLoanBook ? (
                     <button
@@ -1039,15 +1052,26 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         )}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        {isAvailable && onLoanBook && (
+                        <div className="inline-flex items-center justify-end gap-1.5">
                           <button
                             type="button"
-                            onClick={() => onLoanBook(book)}
-                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-xs transition cursor-pointer"
+                            onClick={() => setBookToPrintLabel(book)}
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-lg text-xs font-bold transition inline-flex items-center gap-1 cursor-pointer"
+                            title="Stampa etichetta termica Brother TD-2320D (51mm x 26mm)"
                           >
-                            Presta
+                            <Printer className="w-3 h-3" />
+                            <span>Stampa Etichetta (51x26)</span>
                           </button>
-                        )}
+                          {isAvailable && onLoanBook && (
+                            <button
+                              type="button"
+                              onClick={() => onLoanBook(book)}
+                              className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-xs transition cursor-pointer"
+                            >
+                              Presta
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1083,6 +1107,15 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
           books={books}
           isOpen={isPrintBarcodesOpen}
           onClose={() => setIsPrintBarcodesOpen(false)}
+        />
+      )}
+
+      {bookToPrintLabel && (
+        <LabelPrinter
+          book={bookToPrintLabel}
+          isOpen={!!bookToPrintLabel}
+          onClose={() => setBookToPrintLabel(null)}
+          schoolName={settings?.schoolName}
         />
       )}
     </div>
